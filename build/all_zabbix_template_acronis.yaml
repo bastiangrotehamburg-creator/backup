@@ -1,0 +1,274 @@
+zabbix_export:
+  version: '7.0'
+  template_groups:
+    - uuid: 3fa85f6457174562b3fc2c963f66afa6
+      name: 'Templates/Applications'
+  templates:
+    - uuid: 1585b9b1ab69490382f6e91f3a2c0734
+      template: 'Acronis Backup Monitoring - Global'
+      name: 'Acronis Backup Monitoring - Global'
+      description: 'Template für Acronis Backup Collector. Sammelt alle Daten ohne Mandanten-Filter.'
+      groups:
+        - name: 'Templates/Applications'
+      items:
+        - uuid: 42dc0835f11a43aeb294e101f3792cb8
+          name: 'Acronis Collector Raw Data'
+          type: HTTP_AGENT
+          key: acronis.collector.raw
+          delay: 5m
+          url: '{$ACRONIS_URL}'
+          headers:
+            - name: 'Authorization'
+              value: 'Bearer {$ACRONIS_TOKEN}'
+          trends: '0'
+          value_type: TEXT
+      discovery_rules:
+        - uuid: 8ad7c50a00c64c8d9ba888b6beab1282
+          name: 'Acronis Backup Discovery (Global)'
+          type: DEPENDENT
+          key: acronis.backup.discovery.global
+          delay: '0'
+          master_item:
+            key: acronis.collector.raw
+          lld_macro_paths:
+            - lld_macro: '{#CLOUD_NAME}'
+              path: $.cloud_name
+            - lld_macro: '{#MACHINE_ID}'
+              path: $.machine_id
+            - lld_macro: '{#MACHINE_NAME}'
+              path: $.machine_name
+          item_prototypes:
+            - uuid: 934d4a86782440b8a3f87b8098c199d3
+              name: 'Acronis: Backup Status [{#CLOUD_NAME}] {#MACHINE_NAME}'
+              type: DEPENDENT
+              key: 'acronis.backup.status[{#MACHINE_ID}]'
+              delay: '0'
+              value_type: UNSIGNED
+              description: '1 = Backup gestern erfolgreich, 0 = kein erfolgreiches Backup gestern'
+              master_item:
+                key: acronis.collector.raw
+              preprocessing:
+                - type: JSONPATH
+                  parameters:
+                    - "$.[?(@.machine_id == '{#MACHINE_ID}')].backup_successful.first()"
+                  error_handler: DISCARD_VALUE
+            - uuid: af78600964d84b6aaf94870830cbb4df
+              name: 'Acronis: Tage mit erfolgreichem Backup (7 Tage) [{#CLOUD_NAME}] {#MACHINE_NAME}'
+              type: DEPENDENT
+              key: 'acronis.backup.successful_days[{#MACHINE_ID}]'
+              delay: '0'
+              value_type: UNSIGNED
+              units: Tage
+              description: 'Anzahl der letzten 7 vollständigen Kalendertage mit mindestens einem erfolgreichen Backup'
+              master_item:
+                key: acronis.collector.raw
+              preprocessing:
+                - type: JSONPATH
+                  parameters:
+                    - "$.[?(@.machine_id == '{#MACHINE_ID}')].successful_backup_days.first()"
+                  error_handler: DISCARD_VALUE
+            - uuid: 417eac1b88894fe59792c1e5999699d8
+              name: 'Acronis: Backup Soll-Tage (7 Tage) [{#CLOUD_NAME}] {#MACHINE_NAME}'
+              type: DEPENDENT
+              key: 'acronis.backup.expected_days[{#MACHINE_ID}]'
+              delay: '0'
+              value_type: UNSIGNED
+              description: 'Tage in den letzten 7 vollständigen Tagen, an denen laut Backup-Plan ein Backup laufen soll'
+              master_item:
+                key: acronis.collector.raw
+              preprocessing:
+                - type: JSONPATH
+                  parameters:
+                    - "$.[?(@.machine_id == '{#MACHINE_ID}')].expected_backup_days.first()"
+                  error_handler: DISCARD_VALUE
+            - uuid: ea8c07e983634ab3b8cba47ec675c06f
+              name: 'Acronis: Backup Ist-Tage (7 Tage) [{#CLOUD_NAME}] {#MACHINE_NAME}'
+              type: DEPENDENT
+              key: 'acronis.backup.fulfilled_days[{#MACHINE_ID}]'
+              delay: '0'
+              value_type: UNSIGNED
+              description: 'Soll-Tage mit erfolgreichem Backup (verspätete Backups zählen innerhalb der Karenzzeit für den geplanten Tag)'
+              master_item:
+                key: acronis.collector.raw
+              preprocessing:
+                - type: JSONPATH
+                  parameters:
+                    - "$.[?(@.machine_id == '{#MACHINE_ID}')].fulfilled_backup_days.first()"
+                  error_handler: DISCARD_VALUE
+            - uuid: 49dfb84cb72b44e3b3f930b6e9c93a2a
+              name: 'Acronis: Backup-Plan Status [{#CLOUD_NAME}] {#MACHINE_NAME}'
+              type: DEPENDENT
+              key: 'acronis.backup.plan_state[{#MACHINE_ID}]'
+              delay: '0'
+              value_type: UNSIGNED
+              description: '1 = aktiver Plan mit Zeitplan, 0 = kein aktiver Backup-Plan oder Zeitplan aus, 2 = Zeitplan nicht auswertbar'
+              master_item:
+                key: acronis.collector.raw
+              preprocessing:
+                - type: JSONPATH
+                  parameters:
+                    - "$.[?(@.machine_id == '{#MACHINE_ID}')].plan_state.first()"
+                  error_handler: CUSTOM_VALUE
+                  error_handler_params: '2'
+            - uuid: 849c483964f04d18812b1fcd296fd6d2
+              name: 'Acronis: Backup-Plan Zeitplan [{#CLOUD_NAME}] {#MACHINE_NAME}'
+              type: DEPENDENT
+              key: 'acronis.backup.schedule_info[{#MACHINE_ID}]'
+              delay: '0'
+              trends: '0'
+              value_type: TEXT
+              description: 'Zugewiesene Backup-Pläne mit Wochentagen und Uhrzeit bzw. Grund, warum kein Soll ermittelt werden konnte'
+              master_item:
+                key: acronis.collector.raw
+              preprocessing:
+                - type: JSONPATH
+                  parameters:
+                    - "$.[?(@.machine_id == '{#MACHINE_ID}')].schedule_info.first()"
+                  error_handler: DISCARD_VALUE
+                - type: DISCARD_UNCHANGED_HEARTBEAT
+                  parameters:
+                    - 1h
+            - uuid: 4f13a6e6859f4dfeb50c4c1117f3c102
+              name: 'Acronis: Backup Fehlergrund [{#CLOUD_NAME}] {#MACHINE_NAME}'
+              type: DEPENDENT
+              key: 'acronis.backup.failure_reason[{#MACHINE_ID}]'
+              delay: '0'
+              trends: '0'
+              value_type: TEXT
+              description: 'Grund, warum gestern kein erfolgreiches Backup vorlag. Leer, wenn das Backup erfolgreich war. Vollständiges Protokoll: /zabbix/backups/failures'
+              master_item:
+                key: acronis.collector.raw
+              preprocessing:
+                - type: JSONPATH
+                  parameters:
+                    - "$.[?(@.machine_id == '{#MACHINE_ID}')].failure_reason.first()"
+                  error_handler: DISCARD_VALUE
+                - type: DISCARD_UNCHANGED_HEARTBEAT
+                  parameters:
+                    - 1h
+            - uuid: 50ccbbf8ce504d60920f04c633aebbd0
+              name: 'Acronis: Aktiver Alarm [{#CLOUD_NAME}] {#MACHINE_NAME}'
+              type: DEPENDENT
+              key: 'acronis.machine.alert[{#MACHINE_ID}]'
+              delay: '0'
+              value_type: UNSIGNED
+              master_item:
+                key: acronis.collector.raw
+              preprocessing:
+                - type: JSONPATH
+                  parameters:
+                    - "$.[?(@.machine_id == '{#MACHINE_ID}')].has_active_alert.first()"
+                  error_handler: CUSTOM_VALUE
+                  error_handler_params: '0'
+            - uuid: 21613eb54fa5422ab88a045ff03328ce
+              name: 'Acronis: Agent Online [{#CLOUD_NAME}] {#MACHINE_NAME}'
+              type: DEPENDENT
+              key: 'acronis.agent.online[{#MACHINE_ID}]'
+              delay: '0'
+              value_type: UNSIGNED
+              master_item:
+                key: acronis.collector.raw
+              preprocessing:
+                - type: JSONPATH
+                  parameters:
+                    - "$.[?(@.machine_id == '{#MACHINE_ID}')].is_online.first()"
+                  error_handler: CUSTOM_VALUE
+                  error_handler_params: '2'
+            - uuid: 7d0d4e924b1745cd861b5f63d04d80a1
+              name: 'Acronis: Release ID [{#CLOUD_NAME}] {#MACHINE_NAME}'
+              type: DEPENDENT
+              key: 'acronis.agent.release_id[{#MACHINE_ID}]'
+              delay: '0'
+              value_type: CHAR
+              master_item:
+                key: acronis.collector.raw
+              preprocessing:
+                - type: JSONPATH
+                  parameters:
+                    - "$.[?(@.machine_id == '{#MACHINE_ID}')].release_id.first()"
+                  error_handler: CUSTOM_VALUE
+                  error_handler_params: 'N/A'
+            - uuid: ac1b29a67cb84aeb9d3ebc03e2c69d80
+              name: 'Acronis: Installer Version [{#CLOUD_NAME}] {#MACHINE_NAME}'
+              type: DEPENDENT
+              key: 'acronis.agent.installer_version[{#MACHINE_ID}]'
+              delay: '0'
+              value_type: CHAR
+              master_item:
+                key: acronis.collector.raw
+              preprocessing:
+                - type: JSONPATH
+                  parameters:
+                    - "$.[?(@.machine_id == '{#MACHINE_ID}')].installer_version.first()"
+                  error_handler: CUSTOM_VALUE
+                  error_handler_params: 'N/A'
+            - uuid: a937a42b10934125b0451cf2980ec4a7
+              name: 'Acronis: Update verfügbar [{#CLOUD_NAME}] {#MACHINE_NAME}'
+              type: DEPENDENT
+              key: 'acronis.agent.has_update[{#MACHINE_ID}]'
+              delay: '0'
+              value_type: UNSIGNED
+              master_item:
+                key: acronis.collector.raw
+              preprocessing:
+                - type: JSONPATH
+                  parameters:
+                    - "$.[?(@.machine_id == '{#MACHINE_ID}')].HasUpdate.first()"
+                  error_handler: CUSTOM_VALUE
+                  error_handler_params: '0'
+          trigger_prototypes:
+            - uuid: 8db5c92c451c4e7fa07a9b6df7d17482
+              expression: 'last(/Acronis Backup Monitoring - Global/acronis.agent.online[{#MACHINE_ID}])=0'
+              name: 'Acronis Agent Offline: [{#CLOUD_NAME}] {#MACHINE_NAME}'
+              priority: HIGH
+              description: 'Der Acronis Agent auf der Maschine {#MACHINE_NAME} ({#CLOUD_NAME}) ist als offline gemeldet.'
+            - uuid: 5f9d12347c6f491c828d11c79a834e56
+              expression: 'last(/Acronis Backup Monitoring - Global/acronis.machine.alert[{#MACHINE_ID}])>0'
+              name: 'Acronis Aktiver Alarm: [{#CLOUD_NAME}] {#MACHINE_NAME}'
+              priority: HIGH
+              description: 'Auf der Maschine {#MACHINE_NAME} ({#CLOUD_NAME}) liegt ein aktiver Acronis-Alarm vor.'
+            - uuid: be2b3c7686f344c5a5b1158e886ba987
+              expression: 'last(/Acronis Backup Monitoring - Global/acronis.backup.status[{#MACHINE_ID}])=0 and (length(last(/Acronis Backup Monitoring - Global/acronis.backup.failure_reason[{#MACHINE_ID}]))>=0 or last(/Acronis Backup Monitoring - Global/acronis.backup.status[{#MACHINE_ID}])=0)'
+              name: 'Acronis Backup fehlgeschlagen: [{#CLOUD_NAME}] {#MACHINE_NAME}'
+              opdata: '{ITEM.LASTVALUE2}'
+              priority: HIGH
+              description: 'Für die Maschine {#MACHINE_NAME} ({#CLOUD_NAME}) gab es gestern kein erfolgreiches Backup. Der Grund steht in den Betriebsdaten. Das Fehlergrund-Item ist nur für die Betriebsdaten im Ausdruck enthalten und beeinflusst das Auslösen nicht. Verlauf mit Task-Details: /zabbix/backups/failures?machine={#MACHINE_NAME}&pretty=1'
+            - uuid: de239521544845e1bc4926d8e2ec822e
+              expression: 'last(/Acronis Backup Monitoring - Global/acronis.backup.successful_days[{#MACHINE_ID}])<{$ACRONIS_MIN_BACKUP_DAYS:"{#MACHINE_NAME}"} and last(/Acronis Backup Monitoring - Global/acronis.backup.plan_state[{#MACHINE_ID}])=2'
+              name: 'Acronis Backup unvollständig (7 Tage, ohne Plan-Daten): [{#CLOUD_NAME}] {#MACHINE_NAME}'
+              opdata: '{ITEM.LASTVALUE1} von {$ACRONIS_MIN_BACKUP_DAYS:"{#MACHINE_NAME}"}'
+              priority: WARNING
+              description: 'Rückfall, wenn der Zeitplan der Maschine {#MACHINE_NAME} ({#CLOUD_NAME}) nicht ausgewertet werden kann: weniger erfolgreiche Backup-Tage als {$ACRONIS_MIN_BACKUP_DAYS}. Mit auswertbarem Plan gilt stattdessen der Soll/Ist-Trigger.'
+              dependencies:
+                - name: 'Acronis Backup fehlgeschlagen: [{#CLOUD_NAME}] {#MACHINE_NAME}'
+                  expression: 'last(/Acronis Backup Monitoring - Global/acronis.backup.status[{#MACHINE_ID}])=0 and (length(last(/Acronis Backup Monitoring - Global/acronis.backup.failure_reason[{#MACHINE_ID}]))>=0 or last(/Acronis Backup Monitoring - Global/acronis.backup.status[{#MACHINE_ID}])=0)'
+            - uuid: fb8c52a01aa448f2967accb86bb2ec45
+              expression: 'last(/Acronis Backup Monitoring - Global/acronis.backup.plan_state[{#MACHINE_ID}])=1 and last(/Acronis Backup Monitoring - Global/acronis.backup.fulfilled_days[{#MACHINE_ID}])<last(/Acronis Backup Monitoring - Global/acronis.backup.expected_days[{#MACHINE_ID}]) and (length(last(/Acronis Backup Monitoring - Global/acronis.backup.schedule_info[{#MACHINE_ID}]))>=0 or last(/Acronis Backup Monitoring - Global/acronis.backup.plan_state[{#MACHINE_ID}])=1)'
+              name: 'Acronis Backup unter Soll (7 Tage): [{#CLOUD_NAME}] {#MACHINE_NAME}'
+              opdata: 'Ist {ITEM.LASTVALUE2} von Soll {ITEM.LASTVALUE3}: {ITEM.LASTVALUE4}'
+              priority: WARNING
+              description: 'Die Maschine {#MACHINE_NAME} ({#CLOUD_NAME}) hatte in den letzten 7 vollständigen Tagen weniger erfolgreiche Backups, als der Backup-Plan vorsieht. Das Fehlergrund-Protokoll zeigt die einzelnen Tage.'
+              dependencies:
+                - name: 'Acronis Backup fehlgeschlagen: [{#CLOUD_NAME}] {#MACHINE_NAME}'
+                  expression: 'last(/Acronis Backup Monitoring - Global/acronis.backup.status[{#MACHINE_ID}])=0 and (length(last(/Acronis Backup Monitoring - Global/acronis.backup.failure_reason[{#MACHINE_ID}]))>=0 or last(/Acronis Backup Monitoring - Global/acronis.backup.status[{#MACHINE_ID}])=0)'
+            - uuid: 99e47a98f0c84143b1cdc7ee50db4325
+              expression: 'last(/Acronis Backup Monitoring - Global/acronis.backup.plan_state[{#MACHINE_ID}])=0 and (length(last(/Acronis Backup Monitoring - Global/acronis.backup.schedule_info[{#MACHINE_ID}]))>=0 or last(/Acronis Backup Monitoring - Global/acronis.backup.plan_state[{#MACHINE_ID}])=0)'
+              name: 'Acronis kein automatischer Backup-Plan: [{#CLOUD_NAME}] {#MACHINE_NAME}'
+              opdata: '{ITEM.LASTVALUE2}'
+              priority: WARNING
+              description: 'Für die Maschine {#MACHINE_NAME} ({#CLOUD_NAME}) ist kein aktiver Backup-Plan mit Zeitplan zugewiesen, oder der Plan bzw. sein Zeitplan ist deaktiviert. Ohne Zeitplan entstehen keine automatischen Backups.'
+            - uuid: 6f9daf4b005f45b4962c91c6b175364b
+              expression: 'last(/Acronis Backup Monitoring - Global/acronis.agent.has_update[{#MACHINE_ID}])=1'
+              name: 'Acronis Agent Update verfügbar: [{#CLOUD_NAME}] {#MACHINE_NAME}'
+              priority: INFO
+              description: 'Für den Acronis Agent auf der Maschine {#MACHINE_NAME} ({#CLOUD_NAME}) ist ein Update verfügbar.'
+      macros:
+        - macro: '{$ACRONIS_MIN_BACKUP_DAYS}'
+          value: '7'
+          description: 'Nur für Maschinen ohne auswertbaren Backup-Plan: Mindestanzahl Tage mit erfolgreichem Backup in 7 Tagen. Pro Maschine überschreibbar per Kontext, z. B. {$ACRONIS_MIN_BACKUP_DAYS:"CLIENT01"} = 5'
+        - macro: '{$ACRONIS_TOKEN}'
+          value: ''
+          description: 'Bearer Token für die API-Authentifizierung (am besten als Secret-Makro anlegen)'
+        - macro: '{$ACRONIS_URL}'
+          value: 'http://127.0.0.1:8080/zabbix/backups'
+          description: 'URL zum Acronis Zabbix Exporter'

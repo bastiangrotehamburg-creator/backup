@@ -1,0 +1,130 @@
+zabbix_export:
+  version: '7.0'
+  template_groups:
+    - uuid: 3fa85f6457174562b3fc2c963f66afa6
+      name: 'Templates/Applications'
+  templates:
+    - uuid: 9b25121b65554f6782414cd9d5fdf89b
+      template: 'Acronis Backup Monitoring'
+      name: 'Acronis Backup Monitoring'
+      description: 'Template für Acronis Backup Collector und Exporter mit API-Token, überschreibbarer URL und Mandanten-Filter'
+      groups:
+        - name: 'Templates/Applications'
+      items:
+        - uuid: 14c2b9a7c6f04c64b6e51240c493c4e3
+          name: 'Acronis Collector Raw Data'
+          type: HTTP_AGENT
+          key: acronis.collector.raw
+          delay: 5m
+          url: '{$ACRONIS_URL}'
+          headers:
+            - name: 'Authorization'
+              value: 'Bearer {$ACRONIS_TOKEN}'
+          trends: '0'
+          value_type: TEXT
+          preprocessing:
+            - type: JSONPATH
+              parameters:
+                - '$'
+      discovery_rules:
+        - uuid: f78e727581724d1a87e07a68e64c3cb5
+          name: 'Acronis Backup Discovery'
+          type: DEPENDENT
+          key: acronis.backup.discovery
+          delay: '0'
+          master_item:
+            key: acronis.collector.raw
+          filter:
+            evaltype: AND_OR
+            conditions:
+              - macro: '{#CLOUD_NAME}'
+                value: '{$ACRONIS_CLOUD}'
+          item_prototypes:
+            - uuid: 2623a41b2bc2499c8f615469cd892224
+              name: 'Acronis: Backup Status {#MACHINE_NAME}'
+              type: DEPENDENT
+              key: 'acronis.backup.status[{#MACHINE_ID}]'
+              delay: '0'
+              value_type: UNSIGNED
+              master_item:
+                key: acronis.collector.raw
+              preprocessing:
+                - type: JSONPATH
+                  parameters:
+                    - "$.[?(@.machine_id == '{#MACHINE_ID}')].backup_successful.first()"
+            - uuid: 6eb33ab871bc458d9bfd6b637d7a7c00
+              name: 'Acronis: Aktiver Alarm {#MACHINE_NAME}'
+              type: DEPENDENT
+              key: 'acronis.machine.alert[{#MACHINE_ID}]'
+              delay: '0'
+              value_type: UNSIGNED
+              master_item:
+                key: acronis.collector.raw
+              preprocessing:
+                - type: JSONPATH
+                  parameters:
+                    - "$.[?(@.machine_id == '{#MACHINE_ID}')].has_active_alert.first()"
+            - uuid: 04481cf1eebc4795b5c90cf69dc67fa2
+              name: 'Acronis: Agent Online {#MACHINE_NAME}'
+              type: DEPENDENT
+              key: 'acronis.agent.online[{#MACHINE_ID}]'
+              delay: '0'
+              value_type: UNSIGNED
+              master_item:
+                key: acronis.collector.raw
+              preprocessing:
+                - type: JSONPATH
+                  parameters:
+                    - "$.[?(@.machine_id == '{#MACHINE_ID}')].is_online.first()"
+            - uuid: 86c67ff6122d4c0ab02cc1100344421b
+              name: 'Acronis: Release ID {#MACHINE_NAME}'
+              type: DEPENDENT
+              key: 'acronis.agent.release_id[{#MACHINE_ID}]'
+              delay: '0'
+              value_type: CHAR
+              master_item:
+                key: acronis.collector.raw
+              preprocessing:
+                - type: JSONPATH
+                  parameters:
+                    - "$.[?(@.machine_id == '{#MACHINE_ID}')].release_id.first()"
+            - uuid: 5d58f33d45bd4b7da3cdae0431b9d45e
+              name: 'Acronis: Installer Version {#MACHINE_NAME}'
+              type: DEPENDENT
+              key: 'acronis.agent.installer_version[{#MACHINE_ID}]'
+              delay: '0'
+              value_type: CHAR
+              master_item:
+                key: acronis.collector.raw
+              preprocessing:
+                - type: JSONPATH
+                  parameters:
+                    - "$.[?(@.machine_id == '{#MACHINE_ID}')].installer_version.first()"
+            - uuid: a9435b54bd6448259db88b907aebccde
+              name: 'Acronis: Update verfügbar {#MACHINE_NAME}'
+              type: DEPENDENT
+              key: 'acronis.agent.has_update[{#MACHINE_ID}]'
+              delay: '0'
+              value_type: UNSIGNED
+              master_item:
+                key: acronis.collector.raw
+              preprocessing:
+                - type: JSONPATH
+                  parameters:
+                    - "$.[?(@.machine_id == '{#MACHINE_ID}')].HasUpdate.first()"
+          trigger_prototypes:
+            - uuid: b861219808604d57a2bd64b281f62b2e
+              expression: 'last(/Acronis Backup Monitoring/acronis.agent.has_update[{#MACHINE_ID}])=1'
+              name: 'Acronis Agent Update verfügbar auf {#MACHINE_NAME}'
+              priority: WARNING
+              description: 'Für den Acronis Agenten auf der Maschine {#MACHINE_NAME} steht ein Update zur Verfügung.'
+      macros:
+        - macro: '{$ACRONIS_CLOUD}'
+          value: 'Kunde_VBB'
+          description: 'Name des Mandanten (Cloud-Name im Collector)'
+        - macro: '{$ACRONIS_TOKEN}'
+          value: ''
+          description: 'Bearer Token für die API-Authentifizierung (am besten als Secret-Makro anlegen)'
+        - macro: '{$ACRONIS_URL}'
+          value: 'http://127.0.0.1:8080/zabbix/backups'
+          description: 'URL zum Acronis Zabbix Exporter'

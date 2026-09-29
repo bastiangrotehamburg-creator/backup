@@ -1,0 +1,711 @@
+<!doctype html>
+<html lang="de">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Backup-KPI</title>
+<style>
+  :root {
+    --paper: #eef1ee;
+    --surface: #f8faf8;
+    --ink: #1b2830;
+    --muted: #5b6a71;
+    --rule: #cfd7d2;
+    --ok: #2e7a62;
+    --warn: #d6a23c;
+    --mid: #cf6a36;
+    --bad: #b3263a;
+    --empty: #dde3df;
+    --focus: #1f5fbf;
+    --font: Bahnschrift, "DIN Alternate", "D-DIN", "Roboto Condensed", "DejaVu Sans Condensed", "Arial Narrow", system-ui, sans-serif;
+  }
+  * { box-sizing: border-box; }
+  html { background: var(--paper); color: var(--ink); }
+  body {
+    margin: 0;
+    font-family: var(--font);
+    font-size: 16px;
+    line-height: 1.45;
+    font-variant-numeric: tabular-nums;
+  }
+  .wrap { max-width: 1180px; margin: 0 auto; padding: 28px 32px 64px; }
+
+  header {
+    display: flex; flex-wrap: wrap; gap: 16px 32px;
+    align-items: center; justify-content: space-between;
+  }
+  h1 { font-size: 20px; font-weight: 600; margin: 0; letter-spacing: 0.01em; }
+  h2 { font-size: 20px; font-weight: 600; margin: 0 0 4px; }
+  .controls { display: flex; flex-wrap: wrap; gap: 12px 20px; align-items: center; }
+
+  .segmented { display: inline-flex; border: 1px solid var(--rule); border-radius: 6px; overflow: hidden; background: var(--surface); }
+  .segmented button {
+    font: inherit; font-size: 14px; border: 0; background: transparent; color: var(--ink);
+    padding: 6px 12px; cursor: pointer;
+  }
+  .segmented button + button { border-left: 1px solid var(--rule); }
+  .segmented button[aria-pressed="true"] { background: var(--ink); color: var(--surface); }
+
+  select, input[type="search"] {
+    font: inherit; font-size: 14px; color: var(--ink); background: var(--surface);
+    border: 1px solid var(--rule); border-radius: 6px; padding: 6px 10px;
+  }
+  label.inline { display: inline-flex; gap: 8px; align-items: center; font-size: 14px; color: var(--muted); }
+  input[type="date"] {
+    font: inherit; font-size: 14px; color: var(--ink); background: var(--surface);
+    border: 1px solid var(--rule); border-radius: 6px; padding: 5px 8px;
+  }
+  .range {
+    display: flex; flex-wrap: wrap; gap: 10px 20px; align-items: center; justify-content: flex-end;
+    margin-top: 14px; padding-top: 14px; border-top: 1px solid var(--rule);
+  }
+  .range[hidden] { display: none; }
+  .quick { display: flex; flex-wrap: wrap; gap: 4px 14px; font-size: 14px; }
+  .quick button, .linkish {
+    font: inherit; font-size: 14px; color: var(--ink); background: none; border: 0; padding: 2px 0; cursor: pointer;
+    text-decoration: underline; text-decoration-color: var(--rule); text-underline-offset: 3px;
+  }
+  .quick button:hover, .linkish:hover { text-decoration-color: var(--ink); }
+  .apply {
+    font: inherit; font-size: 14px; border: 1px solid var(--ink); background: var(--ink); color: var(--surface);
+    border-radius: 6px; padding: 6px 14px; cursor: pointer;
+  }
+  .range-error { color: var(--bad); font-size: 14px; flex-basis: 100%; text-align: right; }
+  .range-error:empty { display: none; }
+
+  :focus-visible { outline: 2px solid var(--focus); outline-offset: 2px; }
+
+  /* Kennzahl und Tagesband */
+  .hero { margin-top: 44px; }
+  .quote { display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 20px; }
+  .quote .number {
+    font-size: clamp(64px, 11vw, 132px); font-weight: 700; line-height: 0.9; letter-spacing: -0.03em;
+  }
+  .quote .number .unit { font-size: 0.45em; font-weight: 500; letter-spacing: 0; margin-left: 0.08em; }
+  .quote .claim { font-size: 22px; max-width: 30ch; line-height: 1.25; }
+  .facts { color: var(--muted); margin: 18px 0 0; max-width: 78ch; }
+  .facts strong { color: var(--ink); font-weight: 600; }
+
+  .tape { margin-top: 28px; }
+  .days {
+    display: grid; gap: 1px; height: 64px;
+    grid-template-columns: repeat(var(--n, 30), minmax(0, 1fr));
+  }
+  .days.dense { gap: 0; }
+  .day { background: var(--empty); position: relative; }
+  .day.ok { background: var(--ok); }
+  .day.l1 { background: var(--warn); }
+  .day.l2 { background: var(--mid); }
+  .day.l3 { background: var(--bad); }
+  .day:hover { outline: 2px solid var(--ink); outline-offset: 0; z-index: 1; }
+  .months { position: relative; height: 24px; font-size: 13px; color: var(--muted); }
+  .months span { position: absolute; top: 0; padding: 4px 0 0 4px; white-space: nowrap; border-left: 1px solid var(--muted); }
+  .legend { display: flex; flex-wrap: wrap; gap: 6px 18px; font-size: 13px; color: var(--muted); margin-top: 8px; }
+  .legend i { display: inline-block; width: 12px; height: 12px; vertical-align: -1px; margin-right: 6px; }
+
+  @media (prefers-reduced-motion: no-preference) {
+    .days.reveal { animation: sweep 900ms cubic-bezier(.2,.7,.2,1) both; }
+    @keyframes sweep { from { clip-path: inset(0 100% 0 0); } to { clip-path: inset(0 0 0 0); } }
+  }
+
+  .tip {
+    position: fixed; pointer-events: none; z-index: 10; background: var(--ink); color: var(--surface);
+    font-size: 13px; padding: 6px 9px; border-radius: 4px; white-space: nowrap; display: none;
+  }
+
+  /* Tabellen */
+  section.block { margin-top: 56px; }
+  .block-head { display: flex; flex-wrap: wrap; justify-content: space-between; align-items: end; gap: 12px 24px; margin-bottom: 12px; }
+  .block-head p { margin: 0; color: var(--muted); font-size: 14px; max-width: 70ch; }
+  .scroll { overflow-x: auto; }
+  table { width: 100%; border-collapse: collapse; font-size: 15px; }
+  th, td { text-align: left; padding: 9px 12px; border-bottom: 1px solid var(--rule); vertical-align: top; }
+  th { font-weight: 600; font-size: 14px; color: var(--muted); white-space: nowrap; }
+  th.num, td.num { text-align: right; }
+  th button { font: inherit; color: inherit; background: none; border: 0; padding: 0; cursor: pointer; }
+  th[aria-sort="ascending"] button::after { content: " ▲"; font-size: 10px; }
+  th[aria-sort="descending"] button::after { content: " ▼"; font-size: 10px; }
+  tbody tr.row:hover { background: var(--surface); }
+  td.name button {
+    font: inherit; color: var(--ink); background: none; border: 0; padding: 0; cursor: pointer; text-align: left;
+    text-decoration: underline; text-decoration-color: var(--rule); text-underline-offset: 3px;
+  }
+  td.name button:hover { text-decoration-color: var(--ink); }
+  td.name { white-space: nowrap; }
+  .bad-text { color: var(--bad); font-weight: 600; }
+
+  .rate { display: flex; align-items: center; gap: 10px; justify-content: flex-end; white-space: nowrap; }
+  .bar { width: 120px; height: 8px; background: var(--bad); border-radius: 1px; overflow: hidden; flex: none; }
+  .bar b { display: block; height: 100%; background: var(--ok); }
+
+  tr.detail td { background: var(--surface); padding: 14px 16px 18px; }
+  .log { list-style: none; margin: 0; padding: 0; max-width: 100ch; }
+  .log li { padding: 10px 0; border-bottom: 1px solid var(--rule); }
+  .log li:last-child { border-bottom: 0; }
+  .log .when { font-weight: 600; margin-right: 10px; }
+  .log .reason { margin: 2px 0 0; }
+  .log .tasks { margin: 8px 0 0; font-size: 14px; color: var(--muted); }
+  .log .tasks summary { cursor: pointer; }
+  .log .tasks table { font-size: 13px; margin-top: 6px; }
+  .log .tasks td, .log .tasks th { padding: 5px 8px; }
+
+  .notice { margin-top: 24px; padding: 12px 16px; border-left: 3px solid var(--warn); background: var(--surface); max-width: 80ch; }
+  .notice.error { border-left-color: var(--bad); }
+  .muted { color: var(--muted); }
+  .nowrap { white-space: nowrap; }
+  footer { margin-top: 48px; font-size: 13px; color: var(--muted); max-width: 80ch; }
+
+  @media print {
+    html, body { background: #fff; }
+    .controls, .range, .tip, input[type="search"], .no-print { display: none !important; }
+    .wrap { max-width: none; padding: 0; }
+    .hero { margin-top: 24px; }
+    .days.reveal { animation: none; }
+    .day, .legend i, .bar, .bar b { -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+    section.block { margin-top: 32px; break-inside: auto; }
+    tr { break-inside: avoid; }
+    td.name button { text-decoration: none; }
+  }
+
+  @media (max-width: 640px) {
+    .wrap { padding: 20px 16px 48px; }
+    .quote .claim { font-size: 18px; }
+    .days { height: 48px; gap: 0; }
+    .bar { display: none; }
+    th, td { padding: 8px 8px; }
+  }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <h1>Backup-KPI</h1>
+    <div class="controls">
+      <div class="segmented" role="group" aria-label="Zeitraum" id="period">
+        <button type="button" data-days="7">7 Tage</button>
+        <button type="button" data-days="30">30 Tage</button>
+        <button type="button" data-days="90">90 Tage</button>
+        <button type="button" data-days="365">365 Tage</button>
+        <button type="button" data-range="1" aria-controls="range" aria-expanded="false">Zeitraum</button>
+      </div>
+      <label class="inline">Cloud
+        <select id="cloud"><option value="">Alle Clouds</option></select>
+      </label>
+      <button type="button" class="linkish" id="print">Drucken</button>
+    </div>
+  </header>
+
+  <div class="range" id="range" hidden>
+    <div class="quick" role="group" aria-label="Schnellwahl">
+      <button type="button" data-quick="lastMonth">Vormonat</button>
+      <button type="button" data-quick="thisMonth">Aktueller Monat</button>
+      <button type="button" data-quick="lastQuarter">Vorquartal</button>
+      <button type="button" data-quick="thisYear">Dieses Jahr</button>
+      <button type="button" data-quick="lastYear">Vorjahr</button>
+    </div>
+    <label class="inline">Von <input type="date" id="from"></label>
+    <label class="inline">Bis <input type="date" id="to"></label>
+    <button type="button" class="apply" id="apply">Zeitraum anzeigen</button>
+    <div class="range-error" id="range-error" role="alert"></div>
+  </div>
+
+  <main id="main" aria-live="polite">
+    <p class="muted" style="margin-top:44px">Daten werden geladen …</p>
+  </main>
+
+  <footer id="footer"></footer>
+</div>
+<div class="tip" id="tip" role="tooltip"></div>
+
+<script>
+(function () {
+  "use strict";
+
+  var nf = new Intl.NumberFormat("de-DE", { maximumFractionDigits: 2 });
+  var nfInt = new Intl.NumberFormat("de-DE");
+  var params = new URLSearchParams(location.search);
+  var isoDate = /^\d{4}-\d{2}-\d{2}$/;
+  var urlFrom = params.get("from"), urlTo = params.get("to");
+  var state = {
+    days: [7, 30, 90, 365].indexOf(Number(params.get("days"))) >= 0 ? Number(params.get("days")) : 365,
+    from: urlFrom && isoDate.test(urlFrom) ? urlFrom : "",
+    to: urlTo && isoDate.test(urlTo) ? urlTo : "",
+    cloud: params.get("cloud") || "",
+    sortKey: "success_percent",
+    sortDir: "asc",
+    search: "",
+    data: null,
+    open: {}
+  };
+
+  // ---------- Hilfen ----------
+  function el(tag, attrs, children) {
+    var node = document.createElement(tag);
+    if (attrs) {
+      Object.keys(attrs).forEach(function (k) {
+        if (k === "class") node.className = attrs[k];
+        else if (k === "text") node.textContent = attrs[k];
+        else if (k.indexOf("on") === 0) node.addEventListener(k.slice(2), attrs[k]);
+        else node.setAttribute(k, attrs[k]);
+      });
+    }
+    (children || []).forEach(function (c) {
+      if (c == null) return;
+      node.appendChild(typeof c === "string" ? document.createTextNode(c) : c);
+    });
+    return node;
+  }
+  function pct(v, total) { return total > 0 ? nf.format(v) + " %" : "–"; }
+  function dateDE(iso) {
+    if (!iso) return "–";
+    var p = iso.split("-");
+    return p[2] + "." + p[1] + "." + p[0];
+  }
+  function monthName(iso) {
+    return new Date(iso + "T12:00:00").toLocaleDateString("de-DE", { month: "short", year: "2-digit" });
+  }
+  function addDays(iso, n) {
+    var p = iso.split("-").map(Number);
+    var d = new Date(Date.UTC(p[0], p[1] - 1, p[2] + n));
+    return d.toISOString().slice(0, 10);
+  }
+  function api(path) {
+    return fetch(path, { credentials: "same-origin", headers: { "Accept": "application/json" } }).then(function (res) {
+      if (res.ok) return res.json();
+      return res.text().then(function (t) {
+        var err = new Error(t || ("HTTP " + res.status));
+        err.status = res.status;
+        throw err;
+      });
+    });
+  }
+  function localIso(d) {
+    return d.getFullYear() + "-" + String(d.getMonth() + 1).padStart(2, "0") + "-" + String(d.getDate()).padStart(2, "0");
+  }
+  function yesterdayIso() {
+    var d = new Date();
+    d.setDate(d.getDate() - 1);
+    return localIso(d);
+  }
+  function periodQuery() {
+    return state.from
+      ? "from=" + state.from + (state.to ? "&to=" + state.to : "")
+      : "days=" + state.days;
+  }
+  function syncUrl() {
+    var q = new URLSearchParams(periodQuery());
+    if (state.cloud) q.set("cloud", state.cloud);
+    history.replaceState(null, "", "?" + q.toString());
+  }
+  function quickRange(kind) {
+    var now = new Date(), y = now.getFullYear(), m = now.getMonth();
+    switch (kind) {
+      case "lastMonth": return [localIso(new Date(y, m - 1, 1)), localIso(new Date(y, m, 0))];
+      case "thisMonth": return [localIso(new Date(y, m, 1)), yesterdayIso()];
+      case "lastQuarter":
+        var qStart = Math.floor(m / 3) * 3;
+        return [localIso(new Date(y, qStart - 3, 1)), localIso(new Date(y, qStart, 0))];
+      case "thisYear": return [y + "-01-01", yesterdayIso()];
+      case "lastYear": return [(y - 1) + "-01-01", (y - 1) + "-12-31"];
+    }
+  }
+
+  // ---------- Laden ----------
+  function load(animate) {
+    syncUrl();
+    document.querySelectorAll("#period button").forEach(function (b) {
+      var active = b.dataset.range ? !!state.from : (!state.from && Number(b.dataset.days) === state.days);
+      b.setAttribute("aria-pressed", active ? "true" : "false");
+    });
+    var q = "zabbix/backups/kpi?" + periodQuery() + (state.cloud ? "&cloud=" + encodeURIComponent(state.cloud) : "");
+    api(q).then(function (data) {
+      state.data = data;
+      state.open = {};
+      fillClouds(data);
+      document.getElementById("from").value = data.from <= data.to ? data.from : data.requested_from;
+      document.getElementById("to").value = data.to;
+      document.title = "Backup-KPI " + (data.cloud_filter ? data.cloud_filter + " " : "") + dateDE(data.requested_from) + " bis " + dateDE(data.to);
+      render(animate);
+    }).catch(function (err) {
+      document.getElementById("main").replaceChildren(el("div", { class: "notice error" }, [
+        el("strong", { text: err.status === 401 ? "Nicht angemeldet. " : "Die Kennzahlen konnten nicht geladen werden. " }),
+        err.status === 401 ? "Lade die Seite neu und melde dich mit den Zugangsdaten für die KPI-Seite an." : String(err.message).slice(0, 400)
+      ]));
+    });
+  }
+
+  function fillClouds(data) {
+    var sel = document.getElementById("cloud");
+    var clouds = data.available_clouds.slice();
+    if (state.cloud && clouds.indexOf(state.cloud) < 0) clouds.push(state.cloud);
+    sel.replaceChildren(el("option", { value: "", text: "Alle Clouds" }));
+    clouds.forEach(function (c) { sel.appendChild(el("option", { value: c, text: c })); });
+    sel.value = state.cloud;
+  }
+
+  // ---------- Darstellung ----------
+  function render(animate) {
+    var d = state.data;
+    var t = d.total;
+    var main = document.getElementById("main");
+    main.replaceChildren();
+
+    if (t.backup_days_total === 0) {
+      main.appendChild(el("div", { class: "notice" }, [
+        el("strong", { text: "Für diesen Zeitraum gibt es noch keine Tagesreports. " }),
+        "Für " + dateDE(d.from <= d.to ? d.from : d.requested_from) + " bis " + dateDE(d.to) + " liegen keine Daten vor. Wähle einen anderen Zeitraum oder eine andere Cloud."
+      ]));
+      renderFooter();
+      return;
+    }
+
+    var scope = d.cloud_filter ? "der Backup-Tage in " + d.cloud_filter + " waren erfolgreich" : "der Backup-Tage waren erfolgreich";
+    var hero = el("section", { class: "hero", "aria-label": "Erfolgsquote" }, [
+      el("div", { class: "quote" }, [
+        el("div", { class: "number" }, [nf.format(t.success_percent), el("span", { class: "unit", text: "%" })]),
+        el("div", { class: "claim", text: scope + "." })
+      ]),
+      el("p", { class: "facts" }, [
+        el("strong", { text: nfInt.format(t.backup_days_failed) }), " von " + nfInt.format(t.backup_days_total) + " ",
+        el("span", { class: "nowrap", text: "Maschinen-Tagen" }),
+        " hatten kein erfolgreiches Backup (" + pct(t.failed_percent, t.backup_days_total) + "). An ",
+        el("strong", { text: nfInt.format(t.days_with_errors) }), " ",
+        el("span", { class: "nowrap", text: "Maschinen-Tagen" }),
+        " gab es mindestens einen Fehler, auch wenn ein späterer Versuch noch geklappt hat. " +
+        "Ausgewertet: " + dateDE(d.from) + " bis " + dateDE(d.to) + "."
+      ])
+    ]);
+    hero.appendChild(renderTape(d, animate));
+    main.appendChild(hero);
+
+    if (d.from > d.requested_from) {
+      main.appendChild(el("div", { class: "notice" }, [
+        "Daten werden erst ab " + dateDE(d.from) + " ausgewertet, der Zeitraum umfasst deshalb weniger als " + d.period_days + " Tage."
+      ]));
+    }
+
+    if (!d.cloud_filter && d.clouds.length > 1) main.appendChild(renderClouds(d));
+    main.appendChild(renderMachines(d));
+    renderFooter();
+  }
+
+  function renderTape(d, animate) {
+    var byDate = {};
+    d.daily.forEach(function (x) { byDate[x.date] = x; });
+    var dates = [];
+    for (var cur = d.from; cur <= d.to; cur = addDays(cur, 1)) dates.push(cur);
+
+    var badDays = d.daily.filter(function (x) { return x.backup_days_failed > 0; }).length;
+    var strip = el("div", { class: "days" + (dates.length > 400 ? " dense" : "") + (animate ? " reveal" : ""), role: "img",
+      "aria-label": "Tagesverlauf: an " + badDays + " von " + dates.length + " Tagen hatte mindestens eine Maschine kein erfolgreiches Backup" });
+    strip.style.setProperty("--n", dates.length);
+
+    var months = el("div", { class: "months", "aria-hidden": "true" });
+    var lastLabelPos = -100;
+    var stripWidth = Math.max(document.getElementById("main").clientWidth, 280);
+    var minGap = ((dates.length > 45 ? 64 : 52) / stripWidth) * 100;
+    dates.forEach(function (iso, i) {
+      var x = byDate[iso];
+      var cls = "day";
+      if (x) {
+        if (x.backup_days_failed === 0) cls += " ok";
+        else if (x.failed_percent <= 10) cls += " l1";
+        else if (x.failed_percent <= 30) cls += " l2";
+        else cls += " l3";
+      }
+      var cell = el("div", { class: cls });
+      cell.dataset.tip = dateDE(iso) + ": " + (x
+        ? (x.backup_days_failed === 0 ? "alle " + x.backup_days_total + " Maschinen erfolgreich"
+          : x.backup_days_failed + " von " + x.backup_days_total + " ohne Backup (" + nf.format(x.failed_percent) + " %)")
+        : "keine Daten");
+      strip.appendChild(cell);
+
+      var pos = (i / dates.length) * 100;
+      var yearly = dates.length > 800;
+      var isLabelDay = yearly ? iso.slice(5) === "01-01" : dates.length > 45 ? iso.slice(8) === "01" : (i % 7 === 0);
+      if (isLabelDay && pos - lastLabelPos >= minGap && pos <= 100 - minGap * 0.9) {
+        var label = el("span", { text: yearly ? iso.slice(0, 4) : dates.length > 45 ? monthName(iso) : dateDE(iso).slice(0, 6) });
+        label.style.left = pos + "%";
+        months.appendChild(label);
+        lastLabelPos = pos;
+      }
+    });
+
+    var tip = document.getElementById("tip");
+    strip.addEventListener("mousemove", function (e) {
+      var text = e.target.dataset && e.target.dataset.tip;
+      if (!text) { tip.style.display = "none"; return; }
+      tip.textContent = text;
+      tip.style.display = "block";
+      tip.style.left = Math.min(e.clientX + 12, window.innerWidth - tip.offsetWidth - 8) + "px";
+      tip.style.top = (e.clientY + 16) + "px";
+    });
+    strip.addEventListener("mouseleave", function () { tip.style.display = "none"; });
+
+    function key(color, text) { return el("span", {}, [el("i", { style: "background:var(" + color + ")" }), text]); }
+    return el("div", { class: "tape" }, [
+      strip,
+      months,
+      el("div", { class: "legend" }, [
+        key("--ok", "alle Maschinen erfolgreich"),
+        key("--warn", "bis 10 % ohne Backup"),
+        key("--mid", "bis 30 %"),
+        key("--bad", "über 30 %"),
+        key("--empty", "kein Report")
+      ])
+    ]);
+  }
+
+  function rateCell(s) {
+    var bar = el("span", { class: "bar", "aria-hidden": "true" }, [el("b")]);
+    bar.firstChild.style.width = (s.backup_days_total > 0 ? s.success_percent : 0) + "%";
+    return el("td", { class: "num" }, [el("span", { class: "rate" }, [pct(s.success_percent, s.backup_days_total), bar])]);
+  }
+
+  function renderClouds(d) {
+    var rows = d.clouds.slice().sort(function (a, b) { return a.success_percent - b.success_percent || a.cloud_name.localeCompare(b.cloud_name, "de"); });
+    var body = el("tbody");
+    rows.forEach(function (c) {
+      body.appendChild(el("tr", { class: "row" }, [
+        el("td", { class: "name" }, [el("button", { type: "button", text: c.cloud_name, title: "Nur diese Cloud anzeigen",
+          onclick: function () { state.cloud = c.cloud_name; load(true); } })]),
+        rateCell(c),
+        el("td", { class: "num" + (c.backup_days_failed > 0 ? " bad-text" : ""), text: nfInt.format(c.backup_days_failed) + " / " + nfInt.format(c.backup_days_total) }),
+        el("td", { class: "num", text: nfInt.format(c.days_with_errors) })
+      ]));
+    });
+    return el("section", { class: "block" }, [
+      el("div", { class: "block-head" }, [
+        el("div", {}, [el("h2", { text: "Clouds" }), el("p", { text: "Ein Klick auf den Namen filtert die Seite auf diese Cloud." })])
+      ]),
+      el("div", { class: "scroll" }, [el("table", {}, [
+        el("thead", {}, [el("tr", {}, [
+          el("th", { text: "Cloud" }), el("th", { class: "num", text: "Erfolgsquote" }),
+          el("th", { class: "num", text: "Ohne Backup / gesamt" }), el("th", { class: "num", text: "Tage mit Fehlern" })
+        ])]),
+        body
+      ])])
+    ]);
+  }
+
+  var columns = [
+    { key: "machine_name", label: "Maschine", type: "text" },
+    { key: "cloud_name", label: "Cloud", type: "text" },
+    { key: "success_percent", label: "Erfolgsquote", type: "num" },
+    { key: "backup_days_failed", label: "Ohne Backup / gesamt", type: "num" },
+    { key: "days_with_errors", label: "Tage mit Fehlern", type: "num" },
+    { key: "last_date", label: "Letzter Report", type: "text" }
+  ];
+
+  function renderMachines(d) {
+    var section = el("section", { class: "block" });
+    var search = el("input", { type: "search", placeholder: "Maschine suchen", "aria-label": "Maschine suchen", value: state.search });
+    var tableHolder = el("div", { class: "scroll" });
+    search.addEventListener("input", function () { state.search = search.value; drawTable(); });
+
+    function drawTable() {
+      var q = state.search.trim().toLowerCase();
+      var rows = d.machines.filter(function (m) {
+        return !q || m.machine_name.toLowerCase().indexOf(q) >= 0 || m.cloud_name.toLowerCase().indexOf(q) >= 0;
+      });
+      var col = columns.filter(function (c) { return c.key === state.sortKey; })[0];
+      rows.sort(function (a, b) {
+        var r = col.type === "num" ? (a[col.key] - b[col.key]) : String(a[col.key]).localeCompare(String(b[col.key]), "de");
+        if (state.sortDir === "desc") r = -r;
+        return r || a.machine_name.localeCompare(b.machine_name, "de");
+      });
+
+      var headRow = el("tr");
+      columns.forEach(function (c) {
+        var th = el("th", { class: c.type === "num" ? "num" : "", scope: "col" }, [el("button", { type: "button", text: c.label,
+          onclick: function () {
+            if (state.sortKey === c.key) state.sortDir = state.sortDir === "asc" ? "desc" : "asc";
+            else { state.sortKey = c.key; state.sortDir = (c.key === "backup_days_failed" || c.key === "days_with_errors" || c.key === "last_date") ? "desc" : "asc"; }
+            drawTable();
+          } })]);
+        if (state.sortKey === c.key) th.setAttribute("aria-sort", state.sortDir === "asc" ? "ascending" : "descending");
+        headRow.appendChild(th);
+      });
+
+      var body = el("tbody");
+      rows.forEach(function (m) {
+        var id = m.cloud_name + "|" + m.machine_id;
+        var btn = el("button", { type: "button", text: m.machine_name || m.machine_id, "aria-expanded": state.open[id] ? "true" : "false" });
+        var tr = el("tr", { class: "row" }, [
+          el("td", { class: "name" }, [btn]),
+          el("td", { text: m.cloud_name }),
+          rateCell(m),
+          el("td", { class: "num" + (m.backup_days_failed > 0 ? " bad-text" : ""), text: nfInt.format(m.backup_days_failed) + " / " + nfInt.format(m.backup_days_total) }),
+          el("td", { class: "num", text: nfInt.format(m.days_with_errors) }),
+          el("td", { text: dateDE(m.last_date) })
+        ]);
+        body.appendChild(tr);
+        var detail = null;
+        if (state.open[id]) { detail = renderDetail(m); body.appendChild(detail); }
+        btn.addEventListener("click", function () {
+          if (state.open[id]) {
+            delete state.open[id];
+            if (detail) detail.remove();
+            detail = null;
+            btn.setAttribute("aria-expanded", "false");
+          } else {
+            state.open[id] = true;
+            detail = renderDetail(m);
+            tr.after(detail);
+            btn.setAttribute("aria-expanded", "true");
+          }
+        });
+      });
+
+      tableHolder.replaceChildren(rows.length ? el("table", {}, [el("thead", {}, [headRow]), body])
+        : el("p", { class: "muted", text: "Keine Maschine passt zur Suche." }));
+    }
+
+    section.appendChild(el("div", { class: "block-head" }, [
+      el("div", {}, [el("h2", { text: "Maschinen" }), el("p", { text: "Ein Klick auf den Namen zeigt, an welchen Tagen das Backup fehlte und warum." })]),
+      search
+    ]));
+    section.appendChild(tableHolder);
+    drawTable();
+    return section;
+  }
+
+  function renderDetail(m) {
+    var cell = el("td", { colspan: String(columns.length) }, [el("p", { class: "muted", style: "margin:0", text: "Protokoll wird geladen …" })]);
+    var row = el("tr", { class: "detail" }, [cell]);
+    var d = state.data;
+
+    if (m.backup_days_failed === 0) {
+      cell.replaceChildren(el("p", { style: "margin:0", text: "Im Zeitraum gab es an jedem Tag mit Report ein erfolgreiches Backup." }));
+      return row;
+    }
+
+    api("zabbix/backups/failures?from=" + d.from + "&to=" + d.to + "&cloud=" + encodeURIComponent(m.cloud_name) + "&machine=" + encodeURIComponent(m.machine_id) + "&limit=1000")
+      .then(function (entries) {
+        entries = entries.filter(function (e) { return e.machine_id === m.machine_id; });
+        if (!entries.length) {
+          cell.replaceChildren(el("p", { style: "margin:0", text: "Für diese Maschine sind im Zeitraum keine Protokolleinträge gespeichert." }));
+          return;
+        }
+        var list = el("ul", { class: "log" });
+        entries.forEach(function (e) {
+          var item = el("li", {}, [
+            el("div", {}, [
+              el("span", { class: "when", text: dateDE(e.report_date) }),
+              e.last_success_date ? el("span", { class: "muted", text: "Letzter Tag mit erfolgreichem Backup davor: " + dateDE(e.last_success_date) }) : null
+            ]),
+            el("p", { class: "reason", text: e.failure_reason })
+          ]);
+          if (e.tasks && e.tasks.length) {
+            var tbody = el("tbody");
+            e.tasks.forEach(function (t) {
+              tbody.appendChild(el("tr", {}, [
+                el("td", { text: String(t.id) }),
+                el("td", { text: t.type || "" }),
+                el("td", { text: t.state || "" }),
+                el("td", { text: t.result || "" }),
+                el("td", { text: t.started_at ? new Date(t.started_at).toLocaleString("de-DE") : "" }),
+                el("td", { text: t.error || t.title || "" })
+              ]));
+            });
+            item.appendChild(el("details", { class: "tasks" }, [
+              el("summary", { text: e.tasks.length === 1 ? "1 Task an diesem Tag" : e.tasks.length + " Tasks an diesem Tag" }),
+              el("div", { class: "scroll" }, [el("table", {}, [
+                el("thead", {}, [el("tr", {}, ["Task", "Typ", "Status", "Ergebnis", "Start", "Fehler oder Titel"].map(function (h) { return el("th", { text: h }); }))]),
+                tbody
+              ])])
+            ]));
+          }
+          list.appendChild(item);
+        });
+        cell.replaceChildren(list);
+      })
+      .catch(function (err) {
+        cell.replaceChildren(el("p", { style: "margin:0", text: err.status === 503
+          ? "Das Protokoll ist noch nicht verfügbar, weil die Datenbank-Spalten dafür fehlen. Sobald der aktuelle Collector gelaufen ist, erscheint es hier."
+          : "Das Protokoll konnte nicht geladen werden: " + String(err.message).slice(0, 300) }));
+      });
+    return row;
+  }
+
+  function renderFooter() {
+    var d = state.data;
+    document.getElementById("footer").textContent = d
+      ? "Ein Maschinen-Tag zählt als erfolgreich, wenn an diesem Tag mindestens ein Backup der Maschine geklappt hat. Datenstand: " + dateDE(d.to) + "."
+      : "";
+  }
+
+  // ---------- Bedienung ----------
+  var rangeBox = document.getElementById("range");
+  var rangeToggle = document.querySelector("#period [data-range]");
+  var rangeError = document.getElementById("range-error");
+  function showRange(open) {
+    rangeBox.hidden = !open;
+    rangeToggle.setAttribute("aria-expanded", open ? "true" : "false");
+  }
+
+  document.getElementById("period").addEventListener("click", function (e) {
+    if (e.target.dataset.range) {
+      showRange(rangeBox.hidden);
+      if (!rangeBox.hidden) document.getElementById("from").focus();
+      return;
+    }
+    var days = Number(e.target.dataset.days);
+    if (days && (days !== state.days || state.from)) {
+      state.days = days;
+      state.from = state.to = "";
+      showRange(false);
+      load(true);
+    }
+  });
+
+  document.querySelector(".quick").addEventListener("click", function (e) {
+    var r = e.target.dataset.quick && quickRange(e.target.dataset.quick);
+    if (!r) return;
+    document.getElementById("from").value = r[0];
+    document.getElementById("to").value = r[1];
+    applyRange();
+  });
+
+  function applyRange() {
+    var from = document.getElementById("from").value;
+    var to = document.getElementById("to").value || yesterdayIso();
+    rangeError.textContent = "";
+    if (!from) { rangeError.textContent = "Bitte ein Startdatum wählen."; return; }
+    if (from > yesterdayIso()) { rangeError.textContent = "Für heute gibt es noch keinen Report. Wähle einen Beginn bis spätestens gestern."; return; }
+    if (from > to) { rangeError.textContent = "Das Startdatum liegt nach dem Enddatum."; return; }
+    state.from = from;
+    state.to = to > yesterdayIso() ? "" : to;
+    load(true);
+  }
+  document.getElementById("apply").addEventListener("click", applyRange);
+  ["from", "to"].forEach(function (id) {
+    var input = document.getElementById(id);
+    input.max = yesterdayIso();
+    input.addEventListener("keydown", function (e) { if (e.key === "Enter") applyRange(); });
+  });
+  document.getElementById("print").addEventListener("click", function () { window.print(); });
+  if (state.from) showRange(true);
+  document.getElementById("cloud").addEventListener("change", function (e) {
+    state.cloud = e.target.value;
+    load(true);
+  });
+
+  // Nur bei geänderter Breite neu zeichnen (mobile Browser feuern resize auch beim Scrollen)
+  var resizeTimer = null;
+  var lastWidth = window.innerWidth;
+  window.addEventListener("resize", function () {
+    clearTimeout(resizeTimer);
+    resizeTimer = setTimeout(function () {
+      if (state.data && window.innerWidth !== lastWidth) {
+        lastWidth = window.innerWidth;
+        render(false);
+      }
+    }, 250);
+  });
+
+  load(true);
+})();
+</script>
+</body>
+</html>
