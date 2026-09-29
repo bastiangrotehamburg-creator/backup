@@ -121,6 +121,20 @@ CREATE TABLE IF NOT EXISTS "acronis_weekly_reports" (
 	UNIQUE ("cloud_name", "machine_id")
 );
 
+CREATE TABLE IF NOT EXISTS "acronis_machines" (
+	"cloud_name" VARCHAR(255) NOT NULL,
+	"machine_id" VARCHAR(255) NOT NULL,
+	"machine_name" VARCHAR(255) NOT NULL,
+	"current_id" VARCHAR(255) NOT NULL,
+	"resource_type" VARCHAR(255) NOT NULL DEFAULT '',
+	"tenant_id" VARCHAR(255) NOT NULL DEFAULT '',
+	"old_machine_ids" JSONB NOT NULL DEFAULT '[]'::jsonb,
+	"created_at" TIMESTAMPTZ NOT NULL DEFAULT now(),
+	"updated_at" TIMESTAMPTZ NOT NULL DEFAULT now(),
+	PRIMARY KEY ("cloud_name", "machine_id"),
+	UNIQUE ("cloud_name", "current_id")
+);
+
 ```
 
 ---

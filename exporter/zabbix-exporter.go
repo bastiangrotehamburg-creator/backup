@@ -41,6 +41,9 @@ type ZabbixItem struct {
 	FulfilledBackupDays int    `json:"fulfilled_backup_days"`
 	PlanState           int    `json:"plan_state"` // 1 Zeitplan aktiv, 0 kein aktiver Plan, 2 nicht auswertbar
 	ScheduleInfo        string `json:"schedule_info"`
+	// machine_id bleibt fest; current_machine_id ist die aktuelle Acronis-ID, old_machine_ids die früheren
+	CurrentMachineID string          `json:"current_machine_id"`
+	OldMachineIDs    json.RawMessage `json:"old_machine_ids"`
 }
 
 // BackupFailure ist ein Eintrag im Backup-Protokoll: eine Maschine an einem Tag ohne erfolgreiches Backup.
@@ -248,6 +251,21 @@ func checkWeeklyPlanColumns(db *sql.DB) bool {
 	return false
 }
 
+// Die Tabelle mit den festen Maschinen-IDs legt der Collector an.
+var machinesTableReady atomic.Bool
+
+func checkMachinesTable(db *sql.DB) bool {
+	if machinesTableReady.Load() {
+		return true
+	}
+	var exists bool
+	if err := db.QueryRow(`SELECT to_regclass('acronis_machines') IS NOT NULL`).Scan(&exists); err == nil && exists {
+		machinesTableReady.Store(true)
+		return true
+	}
+	return false
+}
+
 // Spalten für die Online-Gegenprüfung legt ebenfalls der Collector an.
 var agentColumnsReady atomic.Bool
 
@@ -402,8 +420,10 @@ func main() {
 				CASE WHEN al.id IS NOT NULL THEN 1 ELSE 0 END as has_active_alert,
 				{{FAILURE_REASON}} as failure_reason,
 				CASE WHEN a.is_online IS NULL THEN 'no_agent' ELSE {{ONLINE_SOURCE}} END as online_source,
-				{{WEEKLY_PLAN}}
+				{{WEEKLY_PLAN}},
+				{{MACHINE_IDS}}
 			FROM acronis_daily_reports d
+			{{MACHINE_JOIN}}
 			LEFT JOIN acronis_weekly_reports w 
 				ON d.machine_id = w.machine_id AND d.cloud_name = w.cloud_name
 			-- Genau ein Agent pro Maschine: zuerst Treffer über die ID, dann über den Hostnamen.
@@ -412,10 +432,10 @@ func main() {
 			LEFT JOIN LATERAL (
 				SELECT ag.* FROM acronis_agents ag
 				WHERE ag.cloud_name = d.cloud_name
-				  AND (LOWER(ag.id) = LOWER(d.machine_id)
+				  AND (LOWER(ag.id) = LOWER({{AGENT_ID}})
 				       OR SPLIT_PART(LOWER(ag.hostname), '.', 1) = SPLIT_PART(LOWER(d.machine_name), '.', 1))
 				  {{AGENT_FRESH}}
-				ORDER BY (LOWER(ag.id) = LOWER(d.machine_id)) DESC {{AGENT_ORDER}}, ag.is_online DESC
+				ORDER BY (LOWER(ag.id) = LOWER({{AGENT_ID}})) DESC {{AGENT_ORDER}}, ag.is_online DESC
 				LIMIT 1
 			) a ON true
 			LEFT JOIN LATERAL (
@@ -426,8 +446,28 @@ func main() {
 				LIMIT 1
 			) al ON true
 			WHERE d.machine_id IS NOT NULL AND d.machine_id != ''
+			  {{MACHINE_FILTER}}
 			ORDER BY d.machine_id, d.report_date DESC
 		`
+
+		if checkMachinesTable(db) {
+			// Reports unter einer früheren Acronis-ID ausblenden, falls der Collector sie noch nicht verschoben hat
+			query = strings.Replace(query, "{{MACHINE_JOIN}}", `LEFT JOIN acronis_machines m
+				ON m.cloud_name = d.cloud_name AND m.machine_id = d.machine_id`, 1)
+			query = strings.Replace(query, "{{MACHINE_IDS}}", `COALESCE(m.current_id, d.machine_id),
+				COALESCE(m.old_machine_ids, '[]'::jsonb)::text`, 1)
+			query = strings.Replace(query, "{{AGENT_ID}}", "COALESCE(m.current_id, d.machine_id)", -1)
+			query = strings.Replace(query, "{{MACHINE_FILTER}}", `AND (m.machine_id IS NOT NULL OR NOT EXISTS (
+					SELECT 1 FROM acronis_machines x
+					WHERE x.cloud_name = d.cloud_name
+					  AND (x.current_id = LOWER(d.machine_id) OR x.old_machine_ids @> jsonb_build_array(jsonb_build_object('machine_id', LOWER(d.machine_id))))
+				))`, 1)
+		} else {
+			query = strings.Replace(query, "{{MACHINE_JOIN}}", "", 1)
+			query = strings.Replace(query, "{{MACHINE_IDS}}", "d.machine_id, '[]'", 1)
+			query = strings.Replace(query, "{{AGENT_ID}}", "d.machine_id", -1)
+			query = strings.Replace(query, "{{MACHINE_FILTER}}", "", 1)
+		}
 
 		if checkProtocolColumns(db) {
 			query = strings.Replace(query, "{{FAILURE_REASON}}", "COALESCE(d.failure_reason, '')", 1)
@@ -468,6 +508,7 @@ func main() {
 		for rows.Next() {
 			var item ZabbixItem
 			var success, hasErrors bool
+			var oldIDs string
 
 			if err := rows.Scan(
 				&item.CloudName,
@@ -487,10 +528,13 @@ func main() {
 				&item.FulfilledBackupDays,
 				&item.PlanState,
 				&item.ScheduleInfo,
+				&item.CurrentMachineID,
+				&oldIDs,
 			); err != nil {
 				continue
 			}
 
+			item.OldMachineIDs = json.RawMessage(oldIDs)
 			if success {
 				item.BackupSuccessful = 1
 			}
