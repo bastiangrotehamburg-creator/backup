@@ -216,6 +216,40 @@ zabbix_export:
                     - "$.[?(@.machine_id == '{#MACHINE_ID}')].HasUpdate.first()"
                   error_handler: CUSTOM_VALUE
                   error_handler_params: '0'
+            - uuid: 22d558d64c9a42e7896ef80d0c629d2a
+              name: 'Acronis: Tage seit letztem erfolgreichen Backup [{#CLOUD_NAME}] {#MACHINE_NAME}'
+              type: DEPENDENT
+              key: 'acronis.backup.days_since_success[{#MACHINE_ID}]'
+              delay: '0'
+              value_type: UNSIGNED
+              description: 'Tage seit dem letzten Tag mit erfolgreichem Backup laut Tagesreports. Wurde noch nie ein erfolgreiches Backup aufgezeichnet, zählen die Tage ab dem ersten Report.'
+              master_item:
+                key: acronis.collector.raw
+              preprocessing:
+                - type: JSONPATH
+                  parameters:
+                    - "$.[?(@.machine_id == '{#MACHINE_ID}')].days_since_last_backup.first()"
+                  error_handler: DISCARD_VALUE
+            - uuid: dde02f9a16154cfa80fe0babe361ce14
+              name: 'Acronis: Letztes erfolgreiches Backup [{#CLOUD_NAME}] {#MACHINE_NAME}'
+              type: DEPENDENT
+              key: 'acronis.backup.last_success[{#MACHINE_ID}]'
+              delay: '0'
+              trends: '0'
+              value_type: CHAR
+              master_item:
+                key: acronis.collector.raw
+              preprocessing:
+                - type: JSONPATH
+                  parameters:
+                    - "$.[?(@.machine_id == '{#MACHINE_ID}')].last_success_date.first()"
+                  error_handler: DISCARD_VALUE
+                - type: JAVASCRIPT
+                  parameters:
+                    - 'return value === "" ? "keins aufgezeichnet" : value;'
+                - type: DISCARD_UNCHANGED_HEARTBEAT
+                  parameters:
+                    - 1h
           trigger_prototypes:
             - uuid: 8db5c92c451c4e7fa07a9b6df7d17482
               expression: 'last(/Acronis Backup Monitoring - Global/acronis.agent.online[{#MACHINE_ID}])=0'
@@ -262,7 +296,16 @@ zabbix_export:
               name: 'Acronis Agent Update verfügbar: [{#CLOUD_NAME}] {#MACHINE_NAME}'
               priority: INFO
               description: 'Für den Acronis Agent auf der Maschine {#MACHINE_NAME} ({#CLOUD_NAME}) ist ein Update verfügbar.'
+            - uuid: 80050b56a39b492297516c533ab81bdb
+              expression: 'last(/Acronis Backup Monitoring - Global/acronis.backup.days_since_success[{#MACHINE_ID}])>{$ACRONIS_BACKUP_MAX_AGE_DAYS:"{#MACHINE_NAME}"} and (length(last(/Acronis Backup Monitoring - Global/acronis.backup.last_success[{#MACHINE_ID}]))>=0 or last(/Acronis Backup Monitoring - Global/acronis.backup.days_since_success[{#MACHINE_ID}])>{$ACRONIS_BACKUP_MAX_AGE_DAYS:"{#MACHINE_NAME}"})'
+              name: 'Acronis Backup älter als {$ACRONIS_BACKUP_MAX_AGE_DAYS:"{#MACHINE_NAME}"} Tage: [{#CLOUD_NAME}] {#MACHINE_NAME}'
+              opdata: 'vor {ITEM.LASTVALUE1} Tagen, letztes erfolgreiches Backup: {ITEM.LASTVALUE2}'
+              priority: WARNING
+              description: 'Das letzte erfolgreiche Backup der Maschine {#MACHINE_NAME} ({#CLOUD_NAME}) ist älter als {$ACRONIS_BACKUP_MAX_AGE_DAYS:"{#MACHINE_NAME}"} Tage (Standard 60 = ca. 2 Monate). Das Datum-Item ist nur für die Betriebsdaten im Ausdruck enthalten.'
       macros:
+        - macro: '{$ACRONIS_BACKUP_MAX_AGE_DAYS}'
+          value: '60'
+          description: 'Warnung, wenn das letzte erfolgreiche Backup älter ist (Tage, 60 = ca. 2 Monate). Pro Maschine überschreibbar, z. B. {$ACRONIS_BACKUP_MAX_AGE_DAYS:"CLIENT01"} = 90'
         - macro: '{$ACRONIS_MIN_BACKUP_DAYS}'
           value: '7'
           description: 'Nur für Maschinen ohne auswertbaren Backup-Plan: Mindestanzahl Tage mit erfolgreichem Backup in 7 Tagen. Pro Maschine überschreibbar per Kontext, z. B. {$ACRONIS_MIN_BACKUP_DAYS:"CLIENT01"} = 5'

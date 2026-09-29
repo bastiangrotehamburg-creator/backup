@@ -44,6 +44,10 @@ type ZabbixItem struct {
 	// machine_id bleibt fest; current_machine_id ist die aktuelle Acronis-ID, old_machine_ids die früheren
 	CurrentMachineID string          `json:"current_machine_id"`
 	OldMachineIDs    json.RawMessage `json:"old_machine_ids"`
+	// Letztes erfolgreiches Backup laut Tagesreports (leer = keins aufgezeichnet). Ohne erfolgreiches
+	// Backup zählen die Tage ab dem ersten Report, also mindestens so lange wie aufgezeichnet.
+	LastSuccessDate     string `json:"last_success_date"`
+	DaysSinceLastBackup int    `json:"days_since_last_backup"`
 }
 
 // BackupFailure ist ein Eintrag im Backup-Protokoll: eine Maschine an einem Tag ohne erfolgreiches Backup.
@@ -421,7 +425,9 @@ func main() {
 				{{FAILURE_REASON}} as failure_reason,
 				CASE WHEN a.is_online IS NULL THEN 'no_agent' ELSE {{ONLINE_SOURCE}} END as online_source,
 				{{WEEKLY_PLAN}},
-				{{MACHINE_IDS}}
+				{{MACHINE_IDS}},
+				COALESCE(ls.last_success::text, ''),
+				COALESCE(CURRENT_DATE - COALESCE(ls.last_success, ls.first_report), 0)
 			FROM acronis_daily_reports d
 			{{MACHINE_JOIN}}
 			LEFT JOIN acronis_weekly_reports w 
@@ -438,6 +444,12 @@ func main() {
 				ORDER BY (LOWER(ag.id) = LOWER({{AGENT_ID}})) DESC {{AGENT_ORDER}}, ag.is_online DESC
 				LIMIT 1
 			) a ON true
+			LEFT JOIN LATERAL (
+				SELECT MAX(s.report_date::date) FILTER (WHERE s.backup_successful) AS last_success,
+				       MIN(s.report_date::date) AS first_report
+				FROM acronis_daily_reports s
+				WHERE s.cloud_name = d.cloud_name AND s.machine_id = d.machine_id
+			) ls ON true
 			LEFT JOIN LATERAL (
 				SELECT id FROM acronis_alerts 
 				WHERE cloud_name = d.cloud_name 
@@ -530,6 +542,8 @@ func main() {
 				&item.ScheduleInfo,
 				&item.CurrentMachineID,
 				&oldIDs,
+				&item.LastSuccessDate,
+				&item.DaysSinceLastBackup,
 			); err != nil {
 				continue
 			}

@@ -226,6 +226,10 @@ go build -o zabbix-exporter zabbix-exporter.go
    - `{$ACRONIS_URL}`: Endpunkt-URL (z. B. `http://<exporter-ip>:8080/zabbix/backups`)
    - `{$ACRONIS_TOKEN}`: Der in der `.env` hinterlegte Bearer-Token
    - `{$ACRONIS_CLOUD}`: Mandanten-/Cloud-Name als Filter passend zur Datenquelle
+   - `{$ACRONIS_BACKUP_MAX_AGE_DAYS}`: Warnung, wenn das letzte erfolgreiche Backup älter ist (Standard `60` Tage ≈ 2 Monate, pro Maschine per Kontext überschreibbar, z. B. `{$ACRONIS_BACKUP_MAX_AGE_DAYS:"CLIENT01"}`)
+
+`/zabbix/backups` liefert dafür `last_success_date` (letzter Tag mit erfolgreichem Backup laut Tagesreports, leer = keins aufgezeichnet)
+und `days_since_last_backup`. Ohne aufgezeichnetes erfolgreiches Backup zählen die Tage ab dem ersten Tagesreport der Maschine.
 
 ---
 
