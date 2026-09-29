@@ -165,6 +165,13 @@ CREATE TABLE IF NOT EXISTS "acronis_machines" (
 
 ```
 
+**Update einer bestehenden Installation:** statt des Skripts oben `build/update.sql` ausführen
+(nur `IF NOT EXISTS`, kann mehrfach laufen, ändert keine Daten):
+
+```bash
+psql "<DB_CONNECTION_STRING>" -f build/update.sql
+```
+
 ### 2. Konfiguration (`.env`)
 
 Erstelle eine `.env`-Datei im Stammverzeichnis:
