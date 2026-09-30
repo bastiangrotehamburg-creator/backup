@@ -41,6 +41,7 @@ type ResourceItem struct {
 	ID        string  `json:"id"`
 	Name      string  `json:"name"`
 	Type      string  `json:"type"`
+	TenantID  string  `json:"tenant_id"`
 	CreatedAt apiTime `json:"created_at"`
 }
 
@@ -785,7 +786,7 @@ func lastSuccessBefore(times []time.Time, limit time.Time) time.Time {
 // backfillDailyReports schreibt Tagesreports für Tage, an denen der Collector nicht gelaufen ist.
 // Bestehende Reports werden nie verändert. Eine Maschine bekommt einen nachgetragenen Tag nur, wenn sie
 // an diesem Tag nachweislich schon existierte: früherer Report, Anlage vor dem Tag oder ein Task an dem Tag.
-func backfillDailyReports(db *sql.DB, cloudName string, machineNames map[string]string, created map[string]time.Time,
+func backfillDailyReports(db *sql.DB, cloudName string, machineNames map[string]string, ids machineIdentities, created map[string]time.Time,
 	pastDays map[string]*dayData, successTimes map[string][]time.Time, windowStart, startOfYesterday time.Time, days int) (int, []string, error) {
 
 	first := startOfYesterday.AddDate(0, 0, -days)
@@ -838,10 +839,14 @@ func backfillDailyReports(db *sql.DB, cloudName string, machineNames map[string]
 		dayFilled := 0
 
 		for machineID, name := range machineNames {
-			if existing[machineID+"|"+dayStr] {
+			if ids.skip(machineID) {
 				continue
 			}
-			fr, hasEarlierReport := firstReport[machineID]
+			reportID := ids.id(machineID)
+			if existing[reportID+"|"+dayStr] {
+				continue
+			}
+			fr, hasEarlierReport := firstReport[reportID]
 			c, hasCreated := created[machineID]
 			existedThatDay := (hasEarlierReport && fr < dayStr) ||
 				(hasCreated && c.Before(day)) ||
@@ -868,7 +873,7 @@ func backfillDailyReports(db *sql.DB, cloudName string, machineNames map[string]
 				INSERT INTO acronis_daily_reports (cloud_name, machine_id, machine_name, backup_successful, has_errors, report_date, failure_reason, backup_details, updated_at)
 				VALUES ($1, $2, $3, $4, $5, $6, $7, $8::jsonb, NOW())
 				ON CONFLICT (cloud_name, machine_id, report_date) DO NOTHING
-			`, cloudName, machineID, name, success, data.errors[machineID], dayStr, reason, string(detailsJSON))
+			`, cloudName, reportID, name, success, data.errors[machineID], dayStr, reason, string(detailsJSON))
 			if err != nil {
 				return filled, filledDates, err
 			}
@@ -877,7 +882,7 @@ func backfillDailyReports(db *sql.DB, cloudName string, machineNames map[string]
 				dayFilled++
 				// Ab jetzt gilt die Maschine auch für die Folgetage als vorhanden
 				if !hasEarlierReport || dayStr < fr {
-					firstReport[machineID] = dayStr
+					firstReport[reportID] = dayStr
 				}
 			}
 		}
@@ -1482,6 +1487,9 @@ func main() {
 	if err := ensureDailyReportColumns(db); err != nil {
 		panic(fmt.Sprintf("Spalten für das Backup-Protokoll fehlen und konnten nicht angelegt werden: %v\nBitte manuell ausführen:\n%s;", err, dailyReportMigrationSQL))
 	}
+	if err := ensureMachinesTable(db); err != nil {
+		panic(fmt.Sprintf("Tabelle acronis_machines fehlt und konnte nicht angelegt werden: %v\nBitte manuell ausführen:\n%s;", err, machinesMigrationSQL))
+	}
 
 	clouds := fetchCloudsFromKeycloak()
 
@@ -1543,6 +1551,12 @@ func main() {
 			}
 		}
 		fmt.Printf("-> %d Report-Ressourcen (Filter: %s): %s\n", len(machineNames), reportResourceTypes, resourceTypeSummary(machineItems))
+
+		// Feste machine_id je Maschine, auch wenn Acronis eine neue ID vergibt
+		identities, idErr := resolveMachineIdentities(db, cloud.Name, machineItems)
+		if idErr != nil {
+			fmt.Printf("FEHLER beim Abgleich der Maschinen-IDs für %s, Reports werden in diesem Lauf NICHT aktualisiert: %v\n", cloud.Name, idErr)
+		}
 
 		// Alle Ressourcen ohne Filter, nur um unbekannte resource.ids aus Tasks aufzulösen (Fehler hier sind nicht kritisch)
 		allResources := make(map[string]ResourceItem)
@@ -2010,6 +2024,8 @@ func main() {
 		if tasksFetchFailed {
 			// Unvollständige Daten würden sonst alle Maschinen auf false setzen
 			fmt.Printf("-> Tasks unvollständig abgerufen, Wochen-/Tagesreports für %s werden in diesem Lauf NICHT aktualisiert.\n", cloud.Name)
+		} else if idErr != nil {
+			// Ohne Zuordnung würden Reports unter der neuen Acronis-ID entstehen und in Zabbix doppelt auftauchen
 		} else {
 			reportUpserts := 0
 			reportErrors := 0
@@ -2019,6 +2035,11 @@ func main() {
 			failureLog := make(map[string]string)
 
 			for machineID, name := range machineNames {
+				if identities.skip(machineID) {
+					continue
+				}
+				// Reports werden unter der festen ID gespeichert, alles andere läuft über die aktuelle Acronis-ID
+				reportID := identities.id(machineID)
 				wDaysCount := len(weeklySuccessDays[machineID])
 				wErrorFlag := weeklyErrors[machineID]
 
@@ -2052,7 +2073,7 @@ func main() {
 						plan_state = EXCLUDED.plan_state,
 						schedule_info = EXCLUDED.schedule_info,
 						updated_at = NOW()
-				`, cloud.Name, machineID, name, wDaysCount, wErrorFlag, len(expected), fulfilled, planState, scheduleInfo)
+				`, cloud.Name, reportID, name, wDaysCount, wErrorFlag, len(expected), fulfilled, planState, scheduleInfo)
 				if dbErr != nil {
 					fmt.Printf("FEHLER beim Speichern des Wochenreports für %s: %v\n", machineID, dbErr)
 					reportErrors++
@@ -2102,7 +2123,7 @@ func main() {
 							ELSE EXCLUDED.backup_details
 						END,
 						updated_at = NOW()
-				`, cloud.Name, machineID, name, dSuccessFlag, dErrorFlag, reportDateYesterdayStr, failureReason, string(detailsJSON))
+				`, cloud.Name, reportID, name, dSuccessFlag, dErrorFlag, reportDateYesterdayStr, failureReason, string(detailsJSON))
 				if dbErr != nil {
 					fmt.Printf("FEHLER beim Speichern des Tagesreports für %s: %v\n", machineID, dbErr)
 					reportErrors++
@@ -2112,7 +2133,7 @@ func main() {
 			}
 
 			fmt.Printf("-> Reports: %d gespeichert/aktualisiert, %d Fehler, %d von %d Maschinen mit erfolgreichem Backup gestern.\n",
-				reportUpserts, reportErrors, dailySuccessCount, len(machineNames))
+				reportUpserts, reportErrors, dailySuccessCount, len(machineNames)-len(identities.superseded))
 
 			fmt.Printf("-> Soll/Ist (7 Tage): %d Maschinen mit Zeitplan, %d ohne aktiven Plan, %d nicht auswertbar.\n",
 				planStats[planScheduled], planStats[planNone], planStats[planUnknown])
@@ -2138,7 +2159,7 @@ func main() {
 			}
 
 			if backfillDays > 0 {
-				filled, filledDates, bfErr := backfillDailyReports(db, cloud.Name, machineNames, machineCreated, pastDays, successTimes,
+				filled, filledDates, bfErr := backfillDailyReports(db, cloud.Name, machineNames, identities, machineCreated, pastDays, successTimes,
 					startOfWeekWindow, startOfYesterday, backfillDays)
 				switch {
 				case bfErr != nil:

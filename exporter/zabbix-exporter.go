@@ -41,6 +41,13 @@ type ZabbixItem struct {
 	FulfilledBackupDays int    `json:"fulfilled_backup_days"`
 	PlanState           int    `json:"plan_state"` // 1 Zeitplan aktiv, 0 kein aktiver Plan, 2 nicht auswertbar
 	ScheduleInfo        string `json:"schedule_info"`
+	// machine_id bleibt fest; current_machine_id ist die aktuelle Acronis-ID, old_machine_ids die früheren
+	CurrentMachineID string          `json:"current_machine_id"`
+	OldMachineIDs    json.RawMessage `json:"old_machine_ids"`
+	// Letztes erfolgreiches Backup laut Tagesreports (leer = keins aufgezeichnet). Ohne erfolgreiches
+	// Backup zählen die Tage ab dem ersten Report, also mindestens so lange wie aufgezeichnet.
+	LastSuccessDate     string `json:"last_success_date"`
+	DaysSinceLastBackup int    `json:"days_since_last_backup"`
 }
 
 // BackupFailure ist ein Eintrag im Backup-Protokoll: eine Maschine an einem Tag ohne erfolgreiches Backup.
@@ -248,6 +255,21 @@ func checkWeeklyPlanColumns(db *sql.DB) bool {
 	return false
 }
 
+// Die Tabelle mit den festen Maschinen-IDs legt der Collector an.
+var machinesTableReady atomic.Bool
+
+func checkMachinesTable(db *sql.DB) bool {
+	if machinesTableReady.Load() {
+		return true
+	}
+	var exists bool
+	if err := db.QueryRow(`SELECT to_regclass('acronis_machines') IS NOT NULL`).Scan(&exists); err == nil && exists {
+		machinesTableReady.Store(true)
+		return true
+	}
+	return false
+}
+
 // Spalten für die Online-Gegenprüfung legt ebenfalls der Collector an.
 var agentColumnsReady atomic.Bool
 
@@ -313,8 +335,38 @@ func loadEnvFile(filename string) {
 	}
 }
 
+// allowedOrigin prüft, ob eine extern gehostete KPI-Seite (KPI_ALLOWED_ORIGINS, kommagetrennt,
+// z. B. https://kpi.firma.de) die Endpunkte aus dem Browser abrufen darf.
+func allowedOrigin(origin string) bool {
+	if origin == "" {
+		return false
+	}
+	for _, o := range strings.Split(os.Getenv("KPI_ALLOWED_ORIGINS"), ",") {
+		o = strings.TrimRight(strings.TrimSpace(o), "/")
+		if o == "*" || (o != "" && strings.EqualFold(o, origin)) {
+			return true
+		}
+	}
+	return false
+}
+
 func authenticateRequest(next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
+		// CORS für die extern gehostete KPI-Seite. Die Anmeldung schickt die Seite selbst im
+		// Authorization-Header mit, ein Anmeldedialog des Browsers erscheint dabei nicht.
+		crossOrigin := allowedOrigin(r.Header.Get("Origin"))
+		if crossOrigin {
+			w.Header().Set("Access-Control-Allow-Origin", r.Header.Get("Origin"))
+			w.Header().Add("Vary", "Origin")
+			w.Header().Set("Access-Control-Allow-Headers", "Authorization, Accept")
+			w.Header().Set("Access-Control-Allow-Methods", "GET, OPTIONS")
+			w.Header().Set("Access-Control-Max-Age", "600")
+			if r.Method == http.MethodOptions {
+				w.WriteHeader(http.StatusNoContent)
+				return
+			}
+		}
+
 		// Wenn API_DEBUG auf true steht, Authentifizierung überspringen
 		if strings.ToLower(os.Getenv("API_DEBUG")) == "true" {
 			next(w, r)
@@ -337,14 +389,16 @@ func authenticateRequest(next http.HandlerFunc) http.HandlerFunc {
 				next(w, r)
 				return
 			}
-			w.Header().Set("WWW-Authenticate", `Basic realm="Acronis Backup-KPI", charset="UTF-8"`)
+			if !crossOrigin {
+				w.Header().Set("WWW-Authenticate", `Basic realm="Acronis Backup-KPI", charset="UTF-8"`)
+			}
 			http.Error(w, "Unauthorized: Benutzername oder Passwort falsch", http.StatusUnauthorized)
 			return
 		}
 
 		authHeader := r.Header.Get("Authorization")
 		if authHeader == "" {
-			if dashUser != "" && dashPass != "" {
+			if dashUser != "" && dashPass != "" && !crossOrigin {
 				w.Header().Set("WWW-Authenticate", `Basic realm="Acronis Backup-KPI", charset="UTF-8"`)
 			}
 			http.Error(w, "Unauthorized: No Authorization header provided", http.StatusUnauthorized)
@@ -402,8 +456,12 @@ func main() {
 				CASE WHEN al.id IS NOT NULL THEN 1 ELSE 0 END as has_active_alert,
 				{{FAILURE_REASON}} as failure_reason,
 				CASE WHEN a.is_online IS NULL THEN 'no_agent' ELSE {{ONLINE_SOURCE}} END as online_source,
-				{{WEEKLY_PLAN}}
+				{{WEEKLY_PLAN}},
+				{{MACHINE_IDS}},
+				COALESCE(ls.last_success::text, ''),
+				COALESCE(CURRENT_DATE - COALESCE(ls.last_success, ls.first_report), 0)
 			FROM acronis_daily_reports d
+			{{MACHINE_JOIN}}
 			LEFT JOIN acronis_weekly_reports w 
 				ON d.machine_id = w.machine_id AND d.cloud_name = w.cloud_name
 			-- Genau ein Agent pro Maschine: zuerst Treffer über die ID, dann über den Hostnamen.
@@ -412,12 +470,18 @@ func main() {
 			LEFT JOIN LATERAL (
 				SELECT ag.* FROM acronis_agents ag
 				WHERE ag.cloud_name = d.cloud_name
-				  AND (LOWER(ag.id) = LOWER(d.machine_id)
+				  AND (LOWER(ag.id) = LOWER({{AGENT_ID}})
 				       OR SPLIT_PART(LOWER(ag.hostname), '.', 1) = SPLIT_PART(LOWER(d.machine_name), '.', 1))
 				  {{AGENT_FRESH}}
-				ORDER BY (LOWER(ag.id) = LOWER(d.machine_id)) DESC {{AGENT_ORDER}}, ag.is_online DESC
+				ORDER BY (LOWER(ag.id) = LOWER({{AGENT_ID}})) DESC {{AGENT_ORDER}}, ag.is_online DESC
 				LIMIT 1
 			) a ON true
+			LEFT JOIN LATERAL (
+				SELECT MAX(s.report_date::date) FILTER (WHERE s.backup_successful) AS last_success,
+				       MIN(s.report_date::date) AS first_report
+				FROM acronis_daily_reports s
+				WHERE s.cloud_name = d.cloud_name AND s.machine_id = d.machine_id
+			) ls ON true
 			LEFT JOIN LATERAL (
 				SELECT id FROM acronis_alerts 
 				WHERE cloud_name = d.cloud_name 
@@ -426,8 +490,28 @@ func main() {
 				LIMIT 1
 			) al ON true
 			WHERE d.machine_id IS NOT NULL AND d.machine_id != ''
+			  {{MACHINE_FILTER}}
 			ORDER BY d.machine_id, d.report_date DESC
 		`
+
+		if checkMachinesTable(db) {
+			// Reports unter einer früheren Acronis-ID ausblenden, falls der Collector sie noch nicht verschoben hat
+			query = strings.Replace(query, "{{MACHINE_JOIN}}", `LEFT JOIN acronis_machines m
+				ON m.cloud_name = d.cloud_name AND m.machine_id = d.machine_id`, 1)
+			query = strings.Replace(query, "{{MACHINE_IDS}}", `COALESCE(m.current_id, d.machine_id),
+				COALESCE(m.old_machine_ids, '[]'::jsonb)::text`, 1)
+			query = strings.Replace(query, "{{AGENT_ID}}", "COALESCE(m.current_id, d.machine_id)", -1)
+			query = strings.Replace(query, "{{MACHINE_FILTER}}", `AND (m.machine_id IS NOT NULL OR NOT EXISTS (
+					SELECT 1 FROM acronis_machines x
+					WHERE x.cloud_name = d.cloud_name
+					  AND (x.current_id = LOWER(d.machine_id) OR x.old_machine_ids @> jsonb_build_array(jsonb_build_object('machine_id', LOWER(d.machine_id))))
+				))`, 1)
+		} else {
+			query = strings.Replace(query, "{{MACHINE_JOIN}}", "", 1)
+			query = strings.Replace(query, "{{MACHINE_IDS}}", "d.machine_id, '[]'", 1)
+			query = strings.Replace(query, "{{AGENT_ID}}", "d.machine_id", -1)
+			query = strings.Replace(query, "{{MACHINE_FILTER}}", "", 1)
+		}
 
 		if checkProtocolColumns(db) {
 			query = strings.Replace(query, "{{FAILURE_REASON}}", "COALESCE(d.failure_reason, '')", 1)
@@ -468,6 +552,7 @@ func main() {
 		for rows.Next() {
 			var item ZabbixItem
 			var success, hasErrors bool
+			var oldIDs string
 
 			if err := rows.Scan(
 				&item.CloudName,
@@ -487,10 +572,15 @@ func main() {
 				&item.FulfilledBackupDays,
 				&item.PlanState,
 				&item.ScheduleInfo,
+				&item.CurrentMachineID,
+				&oldIDs,
+				&item.LastSuccessDate,
+				&item.DaysSinceLastBackup,
 			); err != nil {
 				continue
 			}
 
+			item.OldMachineIDs = json.RawMessage(oldIDs)
 			if success {
 				item.BackupSuccessful = 1
 			}

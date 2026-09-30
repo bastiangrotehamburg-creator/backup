@@ -149,6 +149,27 @@ CREATE TABLE IF NOT EXISTS "acronis_weekly_reports" (
 	UNIQUE ("cloud_name", "machine_id")
 );
 
+CREATE TABLE IF NOT EXISTS "acronis_machines" (
+	"cloud_name" VARCHAR(255) NOT NULL,
+	"machine_id" VARCHAR(255) NOT NULL,
+	"machine_name" VARCHAR(255) NOT NULL,
+	"current_id" VARCHAR(255) NOT NULL,
+	"resource_type" VARCHAR(255) NOT NULL DEFAULT '',
+	"tenant_id" VARCHAR(255) NOT NULL DEFAULT '',
+	"old_machine_ids" JSONB NOT NULL DEFAULT '[]'::jsonb,
+	"created_at" TIMESTAMPTZ NOT NULL DEFAULT now(),
+	"updated_at" TIMESTAMPTZ NOT NULL DEFAULT now(),
+	PRIMARY KEY ("cloud_name", "machine_id"),
+	UNIQUE ("cloud_name", "current_id")
+);
+
+```
+
+**Update einer bestehenden Installation:** statt des Skripts oben `build/update.sql` ausführen
+(nur `IF NOT EXISTS`, kann mehrfach laufen, ändert keine Daten):
+
+```bash
+psql "<DB_CONNECTION_STRING>" -f build/update.sql
 ```
 
 ### 2. Konfiguration (`.env`)
@@ -171,7 +192,44 @@ DASHBOARD_USER=highq
 DASHBOARD_PASSWORD=sicher
 AGENT_RECHECK_SECONDS=20    # 0 = keine zweite Abfrage
 AGENT_ACTIVITY_MINUTES=30   # 0 = Task-Aktivität nicht berücksichtigen
+MERGE_DUPLICATE_MACHINES=true  # gleichnamige Maschinen mit neuer Acronis-ID zusammenführen
+KPI_ALLOWED_ORIGINS=https://kpi.firma.de  # nur für eine extern gehostete kpi.html (kommagetrennt)
 ```
+
+### KPI-Seite auf einem externen Webserver
+
+Der Exporter liefert die KPI-Seite unter `/kpi` selbst aus. Um `kpi.html` auf einem anderen Webserver
+zu betreiben:
+
+1. In `kpi.html` die Exporter-Adresse eintragen:
+   `<meta name="kpi-api" content="https://exporter.firma.de:8090/">`
+2. In der `.env` des Exporters die Adresse des Webservers erlauben (Schema + Host + ggf. Port, ohne Pfad):
+   `KPI_ALLOWED_ORIGINS=https://kpi.firma.de`
+3. `kpi.html` auf den Webserver kopieren. Die Seite zeigt ein eigenes Anmeldeformular
+   (`DASHBOARD_USER` / `DASHBOARD_PASSWORD`); die Anmeldung gilt, bis der Browser-Tab geschlossen wird.
+
+Läuft die Seite über HTTPS, muss auch der Exporter per HTTPS erreichbar sein (z. B. hinter einem
+Reverse-Proxy), sonst blockiert der Browser die Abfragen. Alternativ kann der Webserver `/zabbix/` per
+Reverse-Proxy an den Exporter weiterleiten; dann bleibt `kpi-api` leer und `KPI_ALLOWED_ORIGINS` ist nicht nötig.
+
+### Feste Maschinen-ID (`acronis_machines`)
+
+Vergibt Acronis einer Maschine eine neue ID (z. B. nach Neuinstallation des Agents), würde sie in
+`/zabbix/backups` doppelt auftauchen und die alte ID dauerhaft als Fehler melden. Der Collector führt
+deshalb in `acronis_machines` pro Cloud eine feste Identität:
+
+- `machine_id`: erste bekannte Acronis-ID, ändert sich nie (daran hängen die Zabbix-Items)
+- `machine_name`: aktueller Name der Maschine
+- `current_id`: aktuelle Acronis-ID
+- `old_machine_ids`: frühere Acronis-IDs als JSON, z. B. `[{"machine_id": "…", "replaced_at": "2026-09-29T10:00:00Z"}]`
+
+Wiedererkannt wird eine Maschine über Name, Ressourcentyp und (falls geliefert) Tenant. Tages- und
+Wochenreports der alten IDs werden automatisch unter die feste ID verschoben. Beim ersten Lauf werden
+bereits vorhandene Duplikate zusammengeführt; die feste ID ist dann die mit dem ältesten Report.
+Existieren alte und neue Registrierung gleichzeitig in Acronis, zählt die neuere, die ältere wird im
+Log gemeldet. Mit `MERGE_DUPLICATE_MACHINES=false` wird nur noch über die ID abgeglichen.
+
+`/zabbix/backups` liefert zusätzlich `current_machine_id` und `old_machine_ids`.
 
 ### 3. Exporter starten
 
@@ -192,6 +250,10 @@ go build -o zabbix-exporter zabbix-exporter.go
    - `{$ACRONIS_URL}`: Endpunkt-URL (z. B. `http://<exporter-ip>:8080/zabbix/backups`)
    - `{$ACRONIS_TOKEN}`: Der in der `.env` hinterlegte Bearer-Token
    - `{$ACRONIS_CLOUD}`: Mandanten-/Cloud-Name als Filter passend zur Datenquelle
+   - `{$ACRONIS_BACKUP_MAX_AGE_DAYS}`: Warnung, wenn das letzte erfolgreiche Backup älter ist (Standard `60` Tage ≈ 2 Monate, pro Maschine per Kontext überschreibbar, z. B. `{$ACRONIS_BACKUP_MAX_AGE_DAYS:"CLIENT01"}`)
+
+`/zabbix/backups` liefert dafür `last_success_date` (letzter Tag mit erfolgreichem Backup laut Tagesreports, leer = keins aufgezeichnet)
+und `days_since_last_backup`. Ohne aufgezeichnetes erfolgreiches Backup zählen die Tage ab dem ersten Tagesreport der Maschine.
 
 ---
 
