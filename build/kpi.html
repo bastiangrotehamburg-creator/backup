@@ -4,6 +4,13 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Backup-KPI</title>
+<!--
+  Betrieb auf einem externen Webserver: hier die Adresse des Exporters eintragen (mit / am Ende),
+  z. B. content="https://exporter.firma.de:8090/". Leer lassen, wenn der Exporter die Seite selbst ausliefert
+  (/kpi) oder ein Reverse-Proxy /zabbix/ auf dem gleichen Server an den Exporter weiterleitet.
+  Im Exporter muss die Adresse dieses Webservers in KPI_ALLOWED_ORIGINS stehen.
+-->
+<meta name="kpi-api" content="">
 <style>
   :root {
     --paper: #eef1ee;
@@ -151,6 +158,9 @@
 
   .notice { margin-top: 24px; padding: 12px 16px; border-left: 3px solid var(--warn); background: var(--surface); max-width: 80ch; }
   .notice.error { border-left-color: var(--bad); }
+  .login { display: flex; flex-wrap: wrap; gap: 10px 16px; align-items: end; margin-top: 12px; }
+  .login label { display: flex; flex-direction: column; gap: 4px; font-size: 14px; color: var(--muted); }
+  .login input { font: inherit; padding: 6px 8px; border: 1px solid var(--rule); background: #fff; color: var(--ink); min-width: 14em; }
   .muted { color: var(--muted); }
   .nowrap { white-space: nowrap; }
   footer { margin-top: 48px; font-size: 13px; color: var(--muted); max-width: 80ch; }
@@ -192,6 +202,7 @@
         <select id="cloud"><option value="">Alle Clouds</option></select>
       </label>
       <button type="button" class="linkish" id="print">Drucken</button>
+      <button type="button" class="linkish" id="logout" hidden>Abmelden</button>
     </div>
   </header>
 
@@ -269,8 +280,30 @@
     var d = new Date(Date.UTC(p[0], p[1] - 1, p[2] + n));
     return d.toISOString().slice(0, 10);
   }
+  // Externer Betrieb: Exporter-Adresse aus <meta name="kpi-api">, Anmeldung über eigenes Formular,
+  // da Browser bei Abfragen an einen anderen Server keinen Anmeldedialog anzeigen.
+  var apiMeta = document.querySelector('meta[name="kpi-api"]');
+  var apiBase = (apiMeta && apiMeta.content || "").trim();
+  if (apiBase && apiBase.slice(-1) !== "/") apiBase += "/";
+  var external = apiBase !== "";
+  var authKey = "kpi-auth:" + apiBase;
+  function getAuth() {
+    try { return sessionStorage.getItem(authKey) || ""; } catch (e) { return ""; }
+  }
+  function setAuth(v) {
+    try { if (v) sessionStorage.setItem(authKey, v); else sessionStorage.removeItem(authKey); } catch (e) { /* nur für diesen Seitenaufruf */ }
+    memAuth = v;
+  }
+  var memAuth = getAuth();
+  function basicAuth(user, pass) {
+    var bytes = new TextEncoder().encode(user + ":" + pass), bin = "";
+    bytes.forEach(function (b) { bin += String.fromCharCode(b); });
+    return "Basic " + btoa(bin);
+  }
   function api(path) {
-    return fetch(path, { credentials: "same-origin", headers: { "Accept": "application/json" } }).then(function (res) {
+    var headers = { "Accept": "application/json" };
+    if (external && memAuth) headers["Authorization"] = memAuth;
+    return fetch(apiBase + path, { credentials: external ? "omit" : "same-origin", headers: headers }).then(function (res) {
       if (res.ok) return res.json();
       return res.text().then(function (t) {
         var err = new Error(t || ("HTTP " + res.status));
@@ -327,11 +360,40 @@
       document.title = "Backup-KPI " + (data.cloud_filter ? data.cloud_filter + " " : "") + dateDE(data.requested_from) + " bis " + dateDE(data.to);
       render(animate);
     }).catch(function (err) {
+      if (external && (err.status === 401 || err.status === 403)) {
+        showLogin(memAuth ? "Benutzername oder Passwort falsch." : "");
+        return;
+      }
+      if (external && !err.status) {
+        err.message = "Der Exporter unter " + apiBase + " ist nicht erreichbar oder erlaubt diesen Server nicht (KPI_ALLOWED_ORIGINS). " + err.message;
+      }
       document.getElementById("main").replaceChildren(el("div", { class: "notice error" }, [
         el("strong", { text: err.status === 401 ? "Nicht angemeldet. " : "Die Kennzahlen konnten nicht geladen werden. " }),
         err.status === 401 ? "Lade die Seite neu und melde dich mit den Zugangsdaten für die KPI-Seite an." : String(err.message).slice(0, 400)
       ]));
     });
+  }
+
+  function showLogin(message) {
+    var user = el("input", { type: "text", autocomplete: "username", required: "required" });
+    var pass = el("input", { type: "password", autocomplete: "current-password", required: "required" });
+    var form = el("form", { class: "login", onsubmit: function (e) {
+      e.preventDefault();
+      setAuth(basicAuth(user.value, pass.value));
+      document.getElementById("logout").hidden = false;
+      load(true);
+    } }, [
+      el("label", {}, ["Benutzer", user]),
+      el("label", {}, ["Passwort", pass]),
+      el("button", { type: "submit", class: "apply", text: "Anmelden" })
+    ]);
+    document.getElementById("logout").hidden = true;
+    document.getElementById("main").replaceChildren(el("div", { class: "notice" + (message ? " error" : "") }, [
+      el("strong", { text: message || "Anmeldung erforderlich." }),
+      " Zugangsdaten für die KPI-Seite (DASHBOARD_USER / DASHBOARD_PASSWORD im Exporter).",
+      form
+    ]));
+    user.focus();
   }
 
   function fillClouds(data) {
@@ -685,6 +747,12 @@
     input.addEventListener("keydown", function (e) { if (e.key === "Enter") applyRange(); });
   });
   document.getElementById("print").addEventListener("click", function () { window.print(); });
+  document.getElementById("logout").hidden = !(external && memAuth);
+  document.getElementById("logout").addEventListener("click", function () {
+    setAuth("");
+    state.data = null;
+    showLogin("");
+  });
   if (state.from) showRange(true);
   document.getElementById("cloud").addEventListener("change", function (e) {
     state.cloud = e.target.value;

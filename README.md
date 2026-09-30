@@ -193,7 +193,24 @@ DASHBOARD_PASSWORD=sicher
 AGENT_RECHECK_SECONDS=20    # 0 = keine zweite Abfrage
 AGENT_ACTIVITY_MINUTES=30   # 0 = Task-Aktivität nicht berücksichtigen
 MERGE_DUPLICATE_MACHINES=true  # gleichnamige Maschinen mit neuer Acronis-ID zusammenführen
+KPI_ALLOWED_ORIGINS=https://kpi.firma.de  # nur für eine extern gehostete kpi.html (kommagetrennt)
 ```
+
+### KPI-Seite auf einem externen Webserver
+
+Der Exporter liefert die KPI-Seite unter `/kpi` selbst aus. Um `kpi.html` auf einem anderen Webserver
+zu betreiben:
+
+1. In `kpi.html` die Exporter-Adresse eintragen:
+   `<meta name="kpi-api" content="https://exporter.firma.de:8090/">`
+2. In der `.env` des Exporters die Adresse des Webservers erlauben (Schema + Host + ggf. Port, ohne Pfad):
+   `KPI_ALLOWED_ORIGINS=https://kpi.firma.de`
+3. `kpi.html` auf den Webserver kopieren. Die Seite zeigt ein eigenes Anmeldeformular
+   (`DASHBOARD_USER` / `DASHBOARD_PASSWORD`); die Anmeldung gilt, bis der Browser-Tab geschlossen wird.
+
+Läuft die Seite über HTTPS, muss auch der Exporter per HTTPS erreichbar sein (z. B. hinter einem
+Reverse-Proxy), sonst blockiert der Browser die Abfragen. Alternativ kann der Webserver `/zabbix/` per
+Reverse-Proxy an den Exporter weiterleiten; dann bleibt `kpi-api` leer und `KPI_ALLOWED_ORIGINS` ist nicht nötig.
 
 ### Feste Maschinen-ID (`acronis_machines`)
 

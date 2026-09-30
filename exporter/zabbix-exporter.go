@@ -335,8 +335,38 @@ func loadEnvFile(filename string) {
 	}
 }
 
+// allowedOrigin prüft, ob eine extern gehostete KPI-Seite (KPI_ALLOWED_ORIGINS, kommagetrennt,
+// z. B. https://kpi.firma.de) die Endpunkte aus dem Browser abrufen darf.
+func allowedOrigin(origin string) bool {
+	if origin == "" {
+		return false
+	}
+	for _, o := range strings.Split(os.Getenv("KPI_ALLOWED_ORIGINS"), ",") {
+		o = strings.TrimRight(strings.TrimSpace(o), "/")
+		if o == "*" || (o != "" && strings.EqualFold(o, origin)) {
+			return true
+		}
+	}
+	return false
+}
+
 func authenticateRequest(next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
+		// CORS für die extern gehostete KPI-Seite. Die Anmeldung schickt die Seite selbst im
+		// Authorization-Header mit, ein Anmeldedialog des Browsers erscheint dabei nicht.
+		crossOrigin := allowedOrigin(r.Header.Get("Origin"))
+		if crossOrigin {
+			w.Header().Set("Access-Control-Allow-Origin", r.Header.Get("Origin"))
+			w.Header().Add("Vary", "Origin")
+			w.Header().Set("Access-Control-Allow-Headers", "Authorization, Accept")
+			w.Header().Set("Access-Control-Allow-Methods", "GET, OPTIONS")
+			w.Header().Set("Access-Control-Max-Age", "600")
+			if r.Method == http.MethodOptions {
+				w.WriteHeader(http.StatusNoContent)
+				return
+			}
+		}
+
 		// Wenn API_DEBUG auf true steht, Authentifizierung überspringen
 		if strings.ToLower(os.Getenv("API_DEBUG")) == "true" {
 			next(w, r)
@@ -359,14 +389,16 @@ func authenticateRequest(next http.HandlerFunc) http.HandlerFunc {
 				next(w, r)
 				return
 			}
-			w.Header().Set("WWW-Authenticate", `Basic realm="Acronis Backup-KPI", charset="UTF-8"`)
+			if !crossOrigin {
+				w.Header().Set("WWW-Authenticate", `Basic realm="Acronis Backup-KPI", charset="UTF-8"`)
+			}
 			http.Error(w, "Unauthorized: Benutzername oder Passwort falsch", http.StatusUnauthorized)
 			return
 		}
 
 		authHeader := r.Header.Get("Authorization")
 		if authHeader == "" {
-			if dashUser != "" && dashPass != "" {
+			if dashUser != "" && dashPass != "" && !crossOrigin {
 				w.Header().Set("WWW-Authenticate", `Basic realm="Acronis Backup-KPI", charset="UTF-8"`)
 			}
 			http.Error(w, "Unauthorized: No Authorization header provided", http.StatusUnauthorized)
